@@ -30,6 +30,8 @@ export function MonacoDiffView({
   onNavigate,
   inlineComments,
   onAddComment,
+  searchMatches,
+  revealMatch,
 }: DiffViewProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const editorRef = useRef<editor.IStandaloneDiffEditor | null>(null);
@@ -37,6 +39,9 @@ export function MonacoDiffView({
     null,
   );
   const decorationsRef = useRef<string[]>([]);
+  // Search-match decorations are kept separate from comment glyphs, on both panes.
+  const searchDecoModRef = useRef<string[]>([]);
+  const searchDecoOrigRef = useRef<string[]>([]);
   // Line the user clicked the gutter on to open the inline composer (null = closed).
   const [composeLine, setComposeLine] = useState<number | null>(null);
   const onAddRef = useRef(onAddComment);
@@ -173,6 +178,54 @@ export function MonacoDiffView({
     }));
     decorationsRef.current = models.modified.deltaDecorations(decorationsRef.current, decos);
   }, [inlineComments, modified]);
+
+  // Highlight search matches. The server-provided matches decorate the modified
+  // (right) pane; we additionally re-find the same spans on the original (left)
+  // pane client-side so a search reads natively across both sides of the diff.
+  useEffect(() => {
+    const models = modelsRef.current;
+    if (!models) return;
+    const monaco = setupMonaco();
+    const matches = searchMatches ?? [];
+
+    const isActive = (line: number, column: number) =>
+      revealMatch != null && revealMatch.line === line && revealMatch.column === column;
+
+    const modDecos = matches.map((m) => ({
+      range: new monaco.Range(m.line, m.column, m.line, m.endColumn),
+      options: {
+        className: isActive(m.line, m.column) ? "search-match search-match-active" : "search-match",
+        overviewRuler: {
+          color: "rgba(234,179,8,0.7)",
+          position: monaco.editor.OverviewRulerLane.Center,
+        },
+      },
+    }));
+    searchDecoModRef.current = models.modified.deltaDecorations(searchDecoModRef.current, modDecos);
+
+    // Mirror onto the left pane: find each modified-match's text in the original.
+    const origDecos: editor.IModelDeltaDecoration[] = [];
+    for (const m of matches) {
+      const text = models.modified.getValueInRange(
+        new monaco.Range(m.line, m.column, m.line, m.endColumn),
+      );
+      if (!text) continue;
+      const found = models.original.findMatches(text, false, false, true, null, false);
+      for (const f of found) {
+        origDecos.push({ range: f.range, options: { className: "search-match" } });
+      }
+    }
+    searchDecoOrigRef.current = models.original.deltaDecorations(searchDecoOrigRef.current, origDecos);
+  }, [searchMatches, revealMatch, original, modified]);
+
+  // Scroll the active match into view (auto-expands collapsed unchanged regions).
+  useEffect(() => {
+    const ed = editorRef.current;
+    if (!ed || !revealMatch) return;
+    const modEd = ed.getModifiedEditor();
+    modEd.revealLineInCenter(revealMatch.line);
+    modEd.setPosition({ lineNumber: revealMatch.line, column: revealMatch.column });
+  }, [revealMatch]);
 
   // Close the composer when switching files.
   useEffect(() => setComposeLine(null), [modifiedUri]);

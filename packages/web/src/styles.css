@@ -684,3 +684,32 @@ h2 {
 .run-caret { color: var(--muted); }
 .run-logs { border-top: 1px solid var(--border); max-height: 50vh; overflow: auto; }
 .run-logs pre { margin: 0; padding: 12px; font-family: ui-monospace, monospace; font-size: 0.8rem; white-space: pre-wrap; word-break: break-word; }
+
+/* ---- PR-wide search panel ---- */
+.pr-search { width: 100%; border-right: 1px solid var(--border); display: flex; flex-direction: column; min-height: 0; background: var(--panel); }
+.pr-search-controls { display: flex; flex-direction: column; gap: 6px; padding: 8px; border-bottom: 1px solid var(--border); }
+.pr-search-controls .search-input { margin: 0; }
+.search-glob { padding: 5px 9px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font-size: 0.8rem; font-family: ui-monospace, monospace; }
+.search-toggles, .search-scope { display: flex; gap: 4px; }
+.search-toggles button { font-family: ui-monospace, monospace; font-size: 0.78rem; min-width: 30px; padding: 3px 6px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg); color: var(--muted); cursor: pointer; }
+.search-toggles button.active { color: var(--accent); border-color: var(--accent); background: rgba(68,147,248,0.14); }
+.search-scope button { flex: 1; font-size: 0.78rem; padding: 4px 6px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg); color: var(--muted); cursor: pointer; }
+.search-scope button.active { color: var(--text); border-color: var(--accent); background: rgba(68,147,248,0.14); }
+.pr-search .search-results { max-height: none; flex: 1; }
+
+/* ---- search match highlights in the diff (both panes) ---- */
+.search-match { background: rgba(234,179,8,0.32); border-radius: 2px; }
+.search-match-active { background: rgba(234,179,8,0.65); outline: 1px solid rgba(234,179,8,0.9); }
+
+/* ---- command palette: branch-pick crumb + branch kind ---- */
+.palette-crumb { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-bottom: 1px solid var(--border); color: var(--muted); font-size: 0.85rem; }
+.palette-back { background: transparent; border: 1px solid var(--border); color: var(--muted); border-radius: 6px; padding: 2px 8px; cursor: pointer; font-size: 0.8rem; }
+.palette-back:hover { color: var(--text); }
+.palette-kind.branch { color: var(--accent); border-color: var(--accent); }
+
+/* ---- standalone Code browser ---- */
+.codebrowser { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.codebrowser-header { display: flex; align-items: center; gap: 12px; padding: 8px 14px; border-bottom: 1px solid var(--border); }
+.code-repo { font-weight: 600; }
+.code-ref { color: var(--muted); font-family: ui-monospace, monospace; font-size: 0.85rem; }
+.codebrowser .browse { height: auto; flex: 1; }

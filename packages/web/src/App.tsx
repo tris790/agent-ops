@@ -1,8 +1,10 @@
+import { useState } from "react";
 import { useActiveOrg, useIdentity } from "./api/useOrg.js";
 import { ReviewQueue } from "./screens/ReviewQueue.js";
 import { PrView } from "./screens/PrView.js";
 import { Config } from "./screens/Config.js";
 import { Pipelines } from "./screens/Pipelines.js";
+import { CodeBrowser } from "./screens/CodeBrowser.js";
 import { CommandPalette } from "./components/CommandPalette.js";
 import { useRoute } from "./router.js";
 
@@ -15,6 +17,9 @@ export function App() {
   const { org, isLoading } = useActiveOrg();
   const me = useIdentity(org?.name);
   const { route, navigate } = useRoute();
+  // Bumping this opens the command palette (used by the Code nav button to let the
+  // user pick a repo+branch to browse).
+  const [paletteSignal, setPaletteSignal] = useState(0);
 
   // No org configured, or token missing/expired -> force config.
   const needsConfig = !org || !org.hasToken || me.isError;
@@ -49,6 +54,17 @@ export function App() {
             Pipelines
           </button>
           <button
+            className={screen === "code" ? "nav-btn active" : "nav-btn"}
+            onClick={() => {
+              // No repo/branch chosen yet → open the palette to pick one.
+              if (route.screen === "code" && route.repoId && route.ref) return;
+              setPaletteSignal((s) => s + 1);
+            }}
+            disabled={needsConfig}
+          >
+            Code
+          </button>
+          <button
             className={screen === "config" ? "nav-btn active" : "nav-btn"}
             onClick={() => navigate({ screen: "config" })}
           >
@@ -75,6 +91,17 @@ export function App() {
           />
         )}
 
+        {screen === "code" && org && route.repoId && route.ref && (
+          <CodeBrowser
+            key={`${route.repoId}@${route.ref}`}
+            org={org.name}
+            repositoryId={route.repoId}
+            refName={route.ref}
+            route={route}
+            navigate={navigate}
+          />
+        )}
+
         {screen === "pr" && org && me.data?.id && route.repoId && route.prId && (
           <PrView
             key={`${route.repoId}/${route.prId}`}
@@ -92,10 +119,14 @@ export function App() {
       {org && me.data?.id && (
         <CommandPalette
           org={org.name}
+          openSignal={paletteSignal}
           onOpenPr={(pr) =>
             navigate({ screen: "pr", repoId: pr.repository.id, prId: pr.pullRequestId })
           }
           onOpenRepo={() => navigate({ screen: "queue" })}
+          onOpenCode={(repo, branch) =>
+            navigate({ screen: "code", repoId: repo.id, ref: branch })
+          }
         />
       )}
     </div>

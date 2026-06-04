@@ -5,7 +5,7 @@ import { PatTokenProvider } from "../ado/token-provider.js";
 import { getPullRequest, getRepository } from "../ado/api.js";
 import { getPrDiffMeta, getFileContent } from "../ado/diff.js";
 import { listViewed, setViewed } from "../store/orgs.js";
-import { ensureWorktree } from "../git/worktree.js";
+import { ensureWorktreeAtRef } from "../git/worktree.js";
 import { cached } from "../store/cache.js";
 
 /** PR detail routes: single PR, diff metadata, per-file content, viewed-state. */
@@ -83,8 +83,12 @@ export async function handlePrRoutes(req: Request, url: URL): Promise<Response |
     );
     if (!repo.remoteUrl) throw new BadRequestError("repository has no remote URL");
     const meta = await getPrDiffMeta(c, repositoryId, prId);
-    const handle = await ensureWorktree(org, repositoryId, repo.remoteUrl, prId, meta.sourceCommit);
-    return json({ path: handle.path, commit: meta.sourceCommit });
+    // Check out the PR's source commit into the repo's single worktree. The PR
+    // head ref is the fallback fetch source when the commit isn't reachable by SHA.
+    const handle = await ensureWorktreeAtRef(org, repositoryId, repo.remoteUrl, meta.sourceCommit, {
+      fallbackRefspec: `+refs/pull/${prId}/head:refs/remotes/origin/pr/${prId}/head`,
+    });
+    return json({ path: handle.path, commit: handle.commit });
   }
 
   return null;

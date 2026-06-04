@@ -11,6 +11,7 @@ import type {
   ReviewFilters,
   ReviewerVote,
   SearchHit,
+  SearchOptions,
   TreeNode,
 } from "@agent-ops/shared";
 
@@ -182,40 +183,46 @@ export const api = {
       `/api/pr/worktree?${qs({ org, repositoryId, pullRequestId })}`,
       { method: "POST" },
     ),
-  lspDetect: (org: string, repositoryId: string, pullRequestId: number) =>
+  lspDetect: (org: string, repositoryId: string) =>
     request<{
       languages: { lang: string; serverName: string; installed: boolean }[];
       worktreeId: string;
-    }>(`/api/lsp/detect?${qs({ org, repositoryId, pullRequestId })}`),
+    }>(`/api/lsp/detect?${qs({ org, repositoryId })}`),
   lspInstall: (lang: string) =>
     request<{ ok: boolean; error?: string }>(`/api/lsp/install?${qs({ lang })}`, {
       method: "POST",
     }),
-  lspSession: (org: string, repositoryId: string, pullRequestId: number, lang: string) =>
+  lspSession: (org: string, repositoryId: string, lang: string) =>
     request<{ status: "ready" | "install-required"; serverName?: string }>(
-      `/api/lsp/session?${qs({ org, repositoryId, pullRequestId, lang })}`,
+      `/api/lsp/session?${qs({ org, repositoryId, lang })}`,
       { method: "POST" },
     ),
+  /** Clone (if needed) + check out a branch into the repo's single worktree. */
+  ensureBranchWorktree: (org: string, repositoryId: string, ref: string) =>
+    request<{ path: string; commit: string }>(
+      `/api/browse/worktree?${qs({ org, repositoryId, ref })}`,
+      { method: "POST" },
+    ),
+  branches: (org: string, repositoryId: string, search?: string) =>
+    request<{ branches: string[] }>(`/api/branches?${qs({ org, repositoryId, search })}`),
 
   // ---- code browse + search ----
-  tree: (org: string, repositoryId: string, pullRequestId: number, path = "/") =>
-    request<{ nodes: TreeNode[] }>(
-      `/api/browse/tree?${qs({ org, repositoryId, pullRequestId, path })}`,
-    ),
-  browseFile: (org: string, repositoryId: string, pullRequestId: number, path: string) =>
+  tree: (org: string, repositoryId: string, path = "/") =>
+    request<{ nodes: TreeNode[] }>(`/api/browse/tree?${qs({ org, repositoryId, path })}`),
+  browseFile: (org: string, repositoryId: string, path: string) =>
     request<{ path: string; content: string | null; binary: boolean }>(
-      `/api/browse/file?${qs({ org, repositoryId, pullRequestId, path })}`,
+      `/api/browse/file?${qs({ org, repositoryId, path })}`,
     ),
-  search: (
-    org: string,
-    repositoryId: string,
-    pullRequestId: number,
-    q: string,
-    regex = false,
-  ) =>
-    request<{ hits: SearchHit[] }>(
-      `/api/browse/search?${qs({ org, repositoryId, pullRequestId, q, regex: regex ? 1 : 0 })}`,
-    ),
+  search: (org: string, repositoryId: string, q: string, opts: Partial<SearchOptions> = {}) => {
+    const u = new URLSearchParams({ org, repositoryId, q });
+    if (opts.regex) u.set("regex", "1");
+    if (opts.caseSensitive) u.set("case", "1");
+    if (opts.wholeWord) u.set("word", "1");
+    for (const g of opts.includeGlobs ?? []) u.append("include", g);
+    for (const g of opts.excludeGlobs ?? []) u.append("exclude", g);
+    for (const p of opts.paths ?? []) u.append("path", p);
+    return request<{ hits: SearchHit[] }>(`/api/browse/search?${u.toString()}`);
+  },
 
   // ---- pipelines ----
   projects: (org: string) =>

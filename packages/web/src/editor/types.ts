@@ -47,6 +47,22 @@ export interface DiffViewProps {
   inlineComments?: InlineComment[];
   /** Create a new thread on the right-side line. */
   onAddComment?: (line: number, content: string) => void;
+
+  /**
+   * Search matches to highlight on the modified (right) pane. Positions are
+   * 1-based, in the modified document's coordinates. The view also highlights the
+   * same query text on the original (left) pane by re-finding it client-side.
+   */
+  searchMatches?: SearchMatch[];
+  /** Scroll this match into view (and emphasize it). Bumps re-reveal on change. */
+  revealMatch?: { line: number; column: number };
+}
+
+/** A search match span on one line (1-based, modified-document coordinates). */
+export interface SearchMatch {
+  line: number;
+  column: number;
+  endColumn: number;
 }
 
 /** A comment thread anchored to a specific right-side line, for inline display. */

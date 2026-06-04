@@ -1,15 +1,15 @@
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { AdoThread, PrChange } from "@agent-ops/shared";
+import type { AdoThread, PrChange, SearchHit, SearchOptions } from "@agent-ops/shared";
 import { api } from "../api/client.js";
 import { useReview } from "../api/useReview.js";
 import { useLsp } from "../api/useLsp.js";
 import { DiffView, type DiffLayout } from "../editor/index.js";
-import type { LspDescriptor, InlineComment } from "../editor/types.js";
+import type { LspDescriptor, InlineComment, SearchMatch } from "../editor/types.js";
 import { languageForPath } from "../editor/language.js";
 import { PrActionBar } from "../components/PrActionBar.js";
 import { CommentsPanel } from "../components/CommentsPanel.js";
-import { Browse } from "./Browse.js";
+import { Browse, groupHitsByFile } from "./Browse.js";
 import { useEffect } from "react";
 import type { Route } from "../router.js";
 import { Resizable } from "../components/Resizable.js";
@@ -51,11 +51,20 @@ export function PrView({
     queryFn: () => api.prViewed(org, repositoryId, pullRequestId),
   });
   const review = useReview(org, repositoryId, pullRequestId);
-  const lsp = useLsp(org, repositoryId, pullRequestId);
+  // The PR worktree is the repo's single checkout at the PR's source commit; use
+  // that commit as the cache-key ref so it's stable and distinct per PR iteration.
+  const ensureWorktree = useCallback(
+    () => api.ensureWorktree(org, repositoryId, pullRequestId),
+    [org, repositoryId, pullRequestId],
+  );
+  const lsp = useLsp(org, repositoryId, ensureWorktree, `pr-${pullRequestId}`);
 
   // Persisted UI prefs (survive F5).
   const [layout, setLayout] = usePersistedState<DiffLayout>("prDiffLayout", "side-by-side");
   const [showComments, setShowComments] = usePersistedState("prShowComments", true);
+  const [showSearch, setShowSearch] = useState(false);
+  // The search hit currently focused; drives reveal + active highlight in the diff.
+  const [activeMatch, setActiveMatch] = useState<SearchMatch & { path: string } | null>(null);
 
   // Mode + selected file + line all derive from the URL so the view is shareable
   // and back/forward-correct. File/mode changes use replace() to avoid flooding
@@ -128,6 +137,15 @@ export function PrView({
           missing={lsp.missing}
           onInstall={lsp.install}
         />
+        {mode === "diff" && (
+          <button
+            className={showSearch ? "nav-btn active" : "nav-btn"}
+            onClick={() => setShowSearch(!showSearch)}
+            title="Search across all changed files"
+          >
+            Search
+          </button>
+        )}
         <button
           className={showComments ? "nav-btn active" : "nav-btn"}
           onClick={() => setShowComments(!showComments)}
@@ -152,7 +170,8 @@ export function PrView({
         <Browse
           org={org}
           repositoryId={repositoryId}
-          pullRequestId={pullRequestId}
+          worktreeRef={`pr-${pullRequestId}`}
+          ensure={ensureWorktree}
           path={route.file}
           line={route.line}
           onOpenFile={(path, line) =>
@@ -161,6 +180,23 @@ export function PrView({
         />
       ) : (
         <div className="prview-body">
+          {showSearch && (
+            <PrSearchPanel
+              org={org}
+              repositoryId={repositoryId}
+              worktreeRef={`pr-${pullRequestId}`}
+              changedPaths={changes.map((c) => c.path)}
+              onOpenHit={(hit) => {
+                setSelected(hit.path);
+                setActiveMatch({
+                  path: hit.path,
+                  line: hit.line,
+                  column: hit.column,
+                  endColumn: hit.endColumn,
+                });
+              }}
+            />
+          )}
           <FileTree
             changes={changes}
             current={current}
@@ -186,6 +222,16 @@ export function PrView({
                 inlineComments={inlineCommentsFor(review.threads, current)}
                 onAddComment={(line, content) =>
                   review.createThread.mutate({ content, filePath: current, rightLine: line })
+                }
+                searchMatches={
+                  activeMatch && activeMatch.path === current
+                    ? [{ line: activeMatch.line, column: activeMatch.column, endColumn: activeMatch.endColumn }]
+                    : undefined
+                }
+                revealMatch={
+                  activeMatch && activeMatch.path === current
+                    ? { line: activeMatch.line, column: activeMatch.column }
+                    : undefined
                 }
               />
             ) : (
@@ -348,6 +394,8 @@ function FileDiff({
   onNavigate,
   inlineComments,
   onAddComment,
+  searchMatches,
+  revealMatch,
 }: {
   org: string;
   repositoryId: string;
@@ -360,6 +408,8 @@ function FileDiff({
   onNavigate: (path: string, line: number) => boolean;
   inlineComments: InlineComment[];
   onAddComment: (line: number, content: string) => void;
+  searchMatches?: SearchMatch[];
+  revealMatch?: { line: number; column: number };
 }) {
   const right = useQuery({
     queryKey: ["file", org, repositoryId, path, sourceCommit],
@@ -404,7 +454,152 @@ function FileDiff({
       onNavigate={onNavigate}
       inlineComments={inlineComments}
       onAddComment={onAddComment}
+      searchMatches={searchMatches}
+      revealMatch={revealMatch}
     />
+  );
+}
+
+/**
+ * PR-wide code search: a VSCode-style search across ALL changed files at once
+ * (regex/case/whole-word toggles + include/exclude globs). Defaults to the PR's
+ * changed files; a toggle widens it to the whole worktree. Clicking a hit opens
+ * that file's diff and highlights the match.
+ */
+function PrSearchPanel({
+  org,
+  repositoryId,
+  worktreeRef,
+  changedPaths,
+  onOpenHit,
+}: {
+  org: string;
+  repositoryId: string;
+  worktreeRef: string;
+  changedPaths: string[];
+  onOpenHit: (hit: SearchHit) => void;
+}) {
+  const [q, setQ] = useState("");
+  const [submitted, setSubmitted] = useState("");
+  const [regex, setRegex] = usePersistedState("prSearchRegex", false);
+  const [caseSensitive, setCaseSensitive] = usePersistedState("prSearchCase", false);
+  const [wholeWord, setWholeWord] = usePersistedState("prSearchWord", false);
+  const [include, setInclude] = usePersistedState("prSearchInclude", "");
+  const [exclude, setExclude] = usePersistedState("prSearchExclude", "");
+  const [scope, setScope] = usePersistedState<"changed" | "all">("prSearchScope", "changed");
+
+  const splitGlobs = (s: string) =>
+    s.split(",").map((g) => g.trim()).filter(Boolean);
+
+  const opts: Partial<SearchOptions> = {
+    regex,
+    caseSensitive,
+    wholeWord,
+    includeGlobs: splitGlobs(include),
+    excludeGlobs: splitGlobs(exclude),
+    paths: scope === "changed" ? changedPaths : [],
+  };
+  // A stable key for the options so the query refetches when any toggle changes.
+  const optsKey = JSON.stringify(opts);
+
+  const results = useQuery({
+    queryKey: ["prsearch", org, repositoryId, worktreeRef, submitted, optsKey],
+    queryFn: () => api.search(org, repositoryId, submitted, opts),
+    enabled: submitted.length > 1,
+  });
+
+  const grouped = useMemo(() => groupHitsByFile(results.data?.hits ?? []), [results.data]);
+
+  return (
+    <Resizable storageKey="prSearchWidth" defaultWidth={320} min={240} max={620}>
+      <aside className="pr-search">
+        <div className="pr-search-controls">
+          <input
+            className="search-input"
+            placeholder="Search changed files…"
+            value={q}
+            autoFocus
+            onChange={(e) => setQ(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && setSubmitted(q)}
+          />
+          <div className="search-toggles">
+            <button
+              className={caseSensitive ? "active" : ""}
+              title="Match case"
+              onClick={() => setCaseSensitive(!caseSensitive)}
+            >
+              Aa
+            </button>
+            <button
+              className={wholeWord ? "active" : ""}
+              title="Match whole word"
+              onClick={() => setWholeWord(!wholeWord)}
+            >
+              ab|
+            </button>
+            <button
+              className={regex ? "active" : ""}
+              title="Use regular expression"
+              onClick={() => setRegex(!regex)}
+            >
+              .*
+            </button>
+          </div>
+          <input
+            className="search-glob"
+            placeholder="files to include (e.g. *.ts, src/)"
+            value={include}
+            onChange={(e) => setInclude(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && setSubmitted(q)}
+          />
+          <input
+            className="search-glob"
+            placeholder="files to exclude"
+            value={exclude}
+            onChange={(e) => setExclude(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && setSubmitted(q)}
+          />
+          <div className="search-scope">
+            <button
+              className={scope === "changed" ? "active" : ""}
+              onClick={() => setScope("changed")}
+            >
+              Changed files
+            </button>
+            <button className={scope === "all" ? "active" : ""} onClick={() => setScope("all")}>
+              Whole repo
+            </button>
+          </div>
+        </div>
+        {submitted && (
+          <div className="search-results">
+            {results.isLoading && <div className="search-status">Searching…</div>}
+            {results.data && (
+              <div className="search-status">
+                {results.data.hits.length} hit{results.data.hits.length === 1 ? "" : "s"} in{" "}
+                {grouped.length} file{grouped.length === 1 ? "" : "s"}
+              </div>
+            )}
+            {grouped.map(([file, hits]) => (
+              <div key={file} className="search-file">
+                <div className="search-file-name">{file.replace(/^\//, "")}</div>
+                {hits.map((h, i) => (
+                  <div
+                    key={i}
+                    className="search-hit"
+                    onClick={() => onOpenHit(h)}
+                    title={`${file}:${h.line}`}
+                  >
+                    <span className="search-line-no">{h.line}</span>
+                    <span className="search-preview">{h.preview.trim()}</span>
+                  </div>
+                ))}
+              </div>
+            ))}
+          </div>
+        )}
+      </aside>
+    </Resizable>
   );
 }
 

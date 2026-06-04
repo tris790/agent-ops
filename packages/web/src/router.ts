@@ -10,12 +10,15 @@ import { useEffect, useState, useCallback } from "react";
  *   #/                                     review queue
  *   #/config                               org/PAT config
  *   #/:repoId/pr/:prId?mode=&file=&line=   PR view (mode: diff|browse)
+ *   #/code/:repoId/:ref?file=&line=        standalone code browse (ref = branch)
  */
 
 export interface Route {
-  screen: "queue" | "config" | "pr" | "pipelines";
+  screen: "queue" | "config" | "pr" | "pipelines" | "code";
   repoId?: string;
   prId?: number;
+  /** Branch name for the code-browse screen (may contain "/"; URL-encoded in hash). */
+  ref?: string;
   mode?: "diff" | "browse";
   file?: string;
   line?: number;
@@ -29,6 +32,17 @@ export function parseHash(hash: string): Route {
 
   if (segs[0] === "config") return { screen: "config" };
   if (segs[0] === "pipelines") return { screen: "pipelines" };
+
+  // /code/:repoId/:ref  (ref is a single URL-encoded segment so "feature/x" survives)
+  if (segs[0] === "code" && segs.length >= 3) {
+    return {
+      screen: "code",
+      repoId: decodeURIComponent(segs[1]!),
+      ref: decodeURIComponent(segs[2]!),
+      file: query.get("file") ?? undefined,
+      line: query.get("line") ? Number(query.get("line")) : undefined,
+    };
+  }
 
   // /:repoId/pr/:prId
   if (segs.length >= 3 && segs[1] === "pr") {
@@ -48,6 +62,13 @@ export function parseHash(hash: string): Route {
 export function buildHash(r: Route): string {
   if (r.screen === "config") return "#/config";
   if (r.screen === "pipelines") return "#/pipelines";
+  if (r.screen === "code" && r.repoId && r.ref) {
+    const q = new URLSearchParams();
+    if (r.file) q.set("file", r.file);
+    if (r.line) q.set("line", String(r.line));
+    const qs = q.toString();
+    return `#/code/${encodeURIComponent(r.repoId)}/${encodeURIComponent(r.ref)}${qs ? "?" + qs : ""}`;
+  }
   if (r.screen === "pr" && r.repoId && r.prId) {
     const q = new URLSearchParams();
     if (r.mode && r.mode !== "diff") q.set("mode", r.mode);

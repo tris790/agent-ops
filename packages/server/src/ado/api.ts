@@ -69,6 +69,23 @@ export async function getRepository(
   return client.getOne(`_apis/git/repositories/${repositoryId}`, adoRepository);
 }
 
+const adoRef = z.object({ name: z.string() }).passthrough();
+
+/**
+ * Branch names for a repo (short form, no `refs/heads/` prefix). `search` maps to
+ * ADO's `filterContains` for type-ahead at repos with many branches.
+ */
+export async function listBranches(
+  client: AdoClient,
+  repositoryId: string,
+  search?: string,
+): Promise<string[]> {
+  const refs = await client.getList(`_apis/git/repositories/${repositoryId}/refs`, adoRef, {
+    query: { filter: "heads/", ...(search ? { filterContains: search } : {}) },
+  });
+  return refs.map((r) => r.name.replace(/^refs\/heads\//, "")).sort((a, b) => a.localeCompare(b));
+}
+
 export interface ListPullRequestsOptions {
   project?: string;
   repositoryId?: string;

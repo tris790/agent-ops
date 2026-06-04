@@ -11,38 +11,49 @@ import { Resizable } from "../components/Resizable.js";
 
 /**
  * Code browse: a lazily-expanding file tree + read-only LSP-enabled file viewer,
- * plus ripgrep search over the worktree. Reached from a PR (browses its checked-out
- * source). Opening a file here also backs go-to-definition into unmodified files.
+ * plus ripgrep search over the repo's worktree. Worktree-agnostic — it reads
+ * whatever ref the host (a PR or the standalone Code tab) has checked out, keyed
+ * for caching by `worktreeRef` (a commit SHA or branch name). The host must ensure
+ * the worktree is at the right ref before/while this renders.
  */
 export function Browse({
   org,
   repositoryId,
-  pullRequestId,
+  worktreeRef,
+  ensure,
   path,
   line,
   onOpenFile,
 }: {
   org: string;
   repositoryId: string;
-  pullRequestId: number;
+  /** Stable cache-key segment for the checked-out ref (commit SHA or branch). */
+  worktreeRef: string;
+  /** Ensures the worktree is checked out at the desired ref; drives LSP readiness. */
+  ensure: () => Promise<{ path: string }>;
   path?: string;
   line?: number;
   onOpenFile: (path: string, line?: number) => void;
 }) {
   const selected = path ?? null;
   const revealLine = line;
-  const lsp = useLsp(org, repositoryId, pullRequestId);
+  const lsp = useLsp(org, repositoryId, ensure, worktreeRef);
   const open = (p: string, l?: number) => onOpenFile(p, l);
 
   return (
     <div className="browse">
       <Resizable storageKey="browseSidebarWidth" defaultWidth={340} min={220} max={640}>
         <div className="browse-sidebar">
-          <SearchBox org={org} repositoryId={repositoryId} pullRequestId={pullRequestId} onOpen={open} />
+          <SearchBox
+            org={org}
+            repositoryId={repositoryId}
+            worktreeRef={worktreeRef}
+            onOpen={open}
+          />
           <TreeView
             org={org}
             repositoryId={repositoryId}
-            pullRequestId={pullRequestId}
+            worktreeRef={worktreeRef}
             selected={selected}
             onSelect={(p) => open(p)}
           />
@@ -53,7 +64,7 @@ export function Browse({
           <FileViewer
             org={org}
             repositoryId={repositoryId}
-            pullRequestId={pullRequestId}
+            worktreeRef={worktreeRef}
             path={selected}
             revealLine={revealLine}
             descriptorFor={lsp.descriptorFor}
@@ -71,13 +82,13 @@ export function Browse({
 function TreeView({
   org,
   repositoryId,
-  pullRequestId,
+  worktreeRef,
   selected,
   onSelect,
 }: {
   org: string;
   repositoryId: string;
-  pullRequestId: number;
+  worktreeRef: string;
   selected: string | null;
   onSelect: (path: string) => void;
 }) {
@@ -86,7 +97,7 @@ function TreeView({
       <TreeLevel
         org={org}
         repositoryId={repositoryId}
-        pullRequestId={pullRequestId}
+        worktreeRef={worktreeRef}
         dir="/"
         depth={0}
         selected={selected}
@@ -99,7 +110,7 @@ function TreeView({
 function TreeLevel({
   org,
   repositoryId,
-  pullRequestId,
+  worktreeRef,
   dir,
   depth,
   selected,
@@ -107,15 +118,15 @@ function TreeLevel({
 }: {
   org: string;
   repositoryId: string;
-  pullRequestId: number;
+  worktreeRef: string;
   dir: string;
   depth: number;
   selected: string | null;
   onSelect: (path: string) => void;
 }) {
   const { data, isLoading } = useQuery({
-    queryKey: ["tree", org, repositoryId, pullRequestId, dir],
-    queryFn: () => api.tree(org, repositoryId, pullRequestId, dir),
+    queryKey: ["tree", org, repositoryId, worktreeRef, dir],
+    queryFn: () => api.tree(org, repositoryId, dir),
   });
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
@@ -147,7 +158,7 @@ function TreeLevel({
             <TreeLevel
               org={org}
               repositoryId={repositoryId}
-              pullRequestId={pullRequestId}
+              worktreeRef={worktreeRef}
               dir={node.path}
               depth={depth + 1}
               selected={selected}
@@ -163,7 +174,7 @@ function TreeLevel({
 function FileViewer({
   org,
   repositoryId,
-  pullRequestId,
+  worktreeRef,
   path,
   revealLine,
   descriptorFor,
@@ -171,15 +182,15 @@ function FileViewer({
 }: {
   org: string;
   repositoryId: string;
-  pullRequestId: number;
+  worktreeRef: string;
   path: string;
   revealLine?: number;
   descriptorFor: (path: string) => Promise<LspDescriptor | null>;
   onNavigate: (path: string, line?: number) => void;
 }) {
   const file = useQuery({
-    queryKey: ["browseFile", org, repositoryId, pullRequestId, path],
-    queryFn: () => api.browseFile(org, repositoryId, pullRequestId, path),
+    queryKey: ["browseFile", org, repositoryId, worktreeRef, path],
+    queryFn: () => api.browseFile(org, repositoryId, path),
   });
   const [descriptor, setDescriptor] = useState<LspDescriptor | null>(null);
   useEffect(() => {
@@ -214,31 +225,23 @@ function FileViewer({
 function SearchBox({
   org,
   repositoryId,
-  pullRequestId,
+  worktreeRef,
   onOpen,
 }: {
   org: string;
   repositoryId: string;
-  pullRequestId: number;
+  worktreeRef: string;
   onOpen: (path: string, line?: number) => void;
 }) {
   const [q, setQ] = useState("");
   const [submitted, setSubmitted] = useState("");
   const results = useQuery({
-    queryKey: ["search", org, repositoryId, pullRequestId, submitted],
-    queryFn: () => api.search(org, repositoryId, pullRequestId, submitted),
+    queryKey: ["search", org, repositoryId, worktreeRef, submitted],
+    queryFn: () => api.search(org, repositoryId, submitted),
     enabled: submitted.length > 1,
   });
 
-  const grouped = useMemo(() => {
-    const m = new Map<string, SearchHit[]>();
-    for (const h of results.data?.hits ?? []) {
-      const arr = m.get(h.path) ?? [];
-      arr.push(h);
-      m.set(h.path, arr);
-    }
-    return [...m.entries()];
-  }, [results.data]);
+  const grouped = useMemo(() => groupHitsByFile(results.data?.hits ?? []), [results.data]);
 
   return (
     <div className="search-box">
@@ -277,4 +280,15 @@ function SearchBox({
       )}
     </div>
   );
+}
+
+/** Groups search hits by file path, preserving first-seen order. */
+export function groupHitsByFile(hits: SearchHit[]): [string, SearchHit[]][] {
+  const m = new Map<string, SearchHit[]>();
+  for (const h of hits) {
+    const arr = m.get(h.path) ?? [];
+    arr.push(h);
+    m.set(h.path, arr);
+  }
+  return [...m.entries()];
 }

@@ -183,10 +183,27 @@ export type TreeNode = z.infer<typeof treeNode>;
 export const searchHit = z.object({
   path: z.string(),
   line: z.number(),
-  column: z.number(),
+  column: z.number(), // 1-based start column of the match
+  endColumn: z.number(), // 1-based column just past the match (for highlighting)
   preview: z.string(),
 });
 export type SearchHit = z.infer<typeof searchHit>;
+
+/** VSCode-style search options (mirrored into ripgrep flags server-side). */
+export const searchOptions = z.object({
+  regex: z.boolean().default(false),
+  caseSensitive: z.boolean().default(false),
+  wholeWord: z.boolean().default(false),
+  includeGlobs: z.array(z.string()).default([]),
+  excludeGlobs: z.array(z.string()).default([]),
+  /** When set, search is restricted to these repo-relative paths (PR changed files). */
+  paths: z.array(z.string()).default([]),
+});
+export type SearchOptions = z.infer<typeof searchOptions>;
+
+/** Branch names (short form, no refs/heads/ prefix) for a repository. */
+export const branchList = z.object({ branches: z.array(z.string()) });
+export type BranchList = z.infer<typeof branchList>;
 
 /** Standard error envelope returned by the backend. */
 export const apiError = z.object({

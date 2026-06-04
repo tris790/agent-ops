@@ -10,13 +10,17 @@ import { cacheGet, cacheSet } from "../store/cache.js";
 import { activeWorktreeIds } from "../lsp/manager.js";
 
 /**
- * Git worktree manager — clones repos and checks out PR commits on disk so the
- * LSP layer (step 7) can run real language servers against them.
+ * Git worktree manager — clones a repo once and checks out whatever ref is needed
+ * (a PR's source commit or a branch) into a single on-disk working tree, so the
+ * LSP layer can run real language servers and code browse/search can read files.
+ *
+ * There is ONE checkout per repo (not per PR). Opening a different PR or branch
+ * re-checks-out the same directory in place; only one ref is live at a time.
  *
  * Layout (all under the gitignored `worktrees/`):
- *   worktrees/<org>/<repoId>/.cache/   partial clone (--filter=blob:none, --no-checkout),
- *                                      owns the shared object store
- *   worktrees/<org>/<repoId>/pr-<id>/  linked worktree checked out at the PR's source commit
+ *   worktrees/<org>/<repoId>/.cache/     partial clone (--filter=blob:none, --no-checkout),
+ *                                        owns the shared object store
+ *   worktrees/<org>/<repoId>/checkout/   linked worktree checked out at the active ref
  *
  * Auth: the PAT is injected per-command via `-c http.extraHeader=...` so it never
  * lands in a remote URL, .git/config, or the reflog.
@@ -24,16 +28,18 @@ import { activeWorktreeIds } from "../lsp/manager.js";
 
 export interface WorktreeHandle {
   path: string;
+  /** The commit SHA the worktree is checked out at. */
+  commit: string;
 }
 
 const sanitize = (s: string) => s.replace(/[^A-Za-z0-9._-]/g, "_");
 const repoDir = (org: string, repoId: string) =>
   join(paths.worktrees, sanitize(org), sanitize(repoId));
 const cacheDir = (org: string, repoId: string) => join(repoDir(org, repoId), ".cache");
-const prWorktreePath = (org: string, repoId: string, prId: number) =>
-  join(repoDir(org, repoId), `pr-${prId}`);
-const worktreeId = (org: string, repoId: string, prId: number) =>
-  `${sanitize(org)}/${sanitize(repoId)}/pr-${prId}`;
+const checkoutPath = (org: string, repoId: string) => join(repoDir(org, repoId), "checkout");
+const worktreeId = (org: string, repoId: string) => `${sanitize(org)}/${sanitize(repoId)}`;
+
+const SHA_RE = /^[0-9a-f]{40}$/i;
 
 /** http.extraHeader config carrying the org's PAT; read fresh so re-entered tokens apply. */
 function authConfig(org: string): string[] {
@@ -88,62 +94,104 @@ function withRepoLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
 // ---- main entry point ----
 
 /**
- * Ensure a worktree for (org, repoId, prId) exists at commitSha; returns its path.
- * Idempotent and concurrency-safe. Emits git/progress through the phases.
+ * Ensure the repo's single worktree is checked out at `ref` — a 40-hex commit
+ * SHA (e.g. a PR's source commit) or a branch name. Returns the path + resolved
+ * commit. Idempotent and concurrency-safe (serialized per repo). Emits git/progress.
+ *
+ * `opts.fallbackRefspec` is fetched if a by-SHA fetch fails (the PR route passes
+ * `+refs/pull/<id>/head:...` so a source commit reachable only via the PR ref can
+ * still be found).
  */
-export function ensureWorktree(
+export function ensureWorktreeAtRef(
   org: string,
   repoId: string,
   remoteUrl: string,
-  prId: number,
-  commitSha: string,
+  ref: string,
+  opts: { fallbackRefspec?: string } = {},
 ): Promise<WorktreeHandle> {
-  const id = worktreeId(org, repoId, prId);
-  const existing = inFlight.get(id);
-  if (existing) return existing;
-
-  // Mark in-flight up front (and immediately) so eviction never deletes this
-  // worktree while we're checking/building it — the IIFE below starts running
-  // synchronously, but registering after it would leave the fast-path rev-parse
-  // unprotected. Touch first so it sorts as most-recently-used.
+  const id = worktreeId(org, repoId);
+  // Touch up front so eviction never deletes this repo while we build/switch it.
   touchWorktree(id);
 
-  const run = async (): Promise<WorktreeHandle> => {
-    const wtPath = prWorktreePath(org, repoId, prId);
+  // Always serialize per repo: two callers may want the SAME repo at DIFFERENT
+  // refs, so we can't dedupe on a single in-flight promise — they must queue and
+  // re-checkout in turn. The lock provides that ordering.
+  const work = withRepoLock(`${org}/${repoId}`, async () => {
+    const wtPath = checkoutPath(org, repoId);
+    try {
+      await ensureCacheClone(org, repoId, remoteUrl, id);
+      const cache = cacheDir(org, repoId);
+      const g = git(cache, org);
 
-    // Fast path: already checked out at the right commit (no lock, no network).
-    if ((await worktreeHeadSha(wtPath)) === commitSha) {
-      touchWorktree(id);
+      const sha = await resolveRef(g, org, repoId, ref, opts.fallbackRefspec, id);
+
+      // Fast path: already checked out at the right commit.
+      if ((await worktreeHeadSha(wtPath)) === sha) {
+        touchWorktree(id);
+        progress(id, "ready");
+        return { path: wtPath, commit: sha };
+      }
+
+      await addOrMoveWorktree(org, repoId, sha, id);
       progress(id, "ready");
-      return { path: wtPath };
+      touchWorktree(id);
+      void evictToCapacity().catch(() => {});
+      return { path: wtPath, commit: sha };
+    } catch (err) {
+      progress(id, "error", err instanceof Error ? err.message : String(err));
+      throw err;
     }
+  });
 
-    return withRepoLock(`${org}/${repoId}`, async () => {
-      // Re-check after acquiring the lock (another caller may have finished it).
-      if ((await worktreeHeadSha(wtPath)) === commitSha) {
-        touchWorktree(id);
-        progress(id, "ready");
-        return { path: wtPath };
-      }
-      try {
-        await ensureCacheClone(org, repoId, remoteUrl, id);
-        await ensureCommitFetched(org, repoId, prId, commitSha, id);
-        await addOrMoveWorktree(org, repoId, prId, commitSha, id);
-        progress(id, "ready");
-        touchWorktree(id);
-        void evictToCapacity().catch(() => {});
-        return { path: wtPath };
-      } catch (err) {
-        progress(id, "error", err instanceof Error ? err.message : String(err));
-        throw err;
-      }
-    });
-  };
-
-  const work = run();
   inFlight.set(id, work);
-  void work.finally(() => inFlight.delete(id));
+  void work.finally(() => {
+    if (inFlight.get(id) === work) inFlight.delete(id);
+  });
   return work;
+}
+
+/**
+ * Resolves `ref` to a commit SHA, fetching it into the cache clone if absent.
+ * A 40-hex ref is fetched by SHA (with optional `fallbackRefspec`); any other ref
+ * is treated as a branch and fetched into a remote-tracking ref, then resolved.
+ */
+async function resolveRef(
+  g: SimpleGit,
+  org: string,
+  repoId: string,
+  ref: string,
+  fallbackRefspec: string | undefined,
+  id: string,
+): Promise<string> {
+  if (SHA_RE.test(ref)) {
+    if (!(await hasCommit(g, ref))) {
+      progress(id, "fetching");
+      try {
+        await g.raw(["fetch", "--filter=blob:none", "--no-tags", "origin", ref]);
+      } catch {
+        if (fallbackRefspec) {
+          await g.raw(["fetch", "--filter=blob:none", "--no-tags", "origin", fallbackRefspec]);
+        }
+      }
+      if (!(await hasCommit(g, ref))) {
+        throw new Error(`commit ${ref.slice(0, 8)} not found after fetch`);
+      }
+    }
+    return ref;
+  }
+
+  // Branch: always fetch the tip (so we follow the branch as it moves), then resolve.
+  progress(id, "fetching");
+  await g.raw([
+    "fetch",
+    "--filter=blob:none",
+    "--no-tags",
+    "origin",
+    `+refs/heads/${ref}:refs/remotes/origin/${ref}`,
+  ]);
+  const sha = (await g.raw(["rev-parse", `refs/remotes/origin/${ref}`])).trim();
+  if (!sha) throw new Error(`branch ${ref} not found after fetch`);
+  return sha;
 }
 
 async function ensureCacheClone(
@@ -163,45 +211,14 @@ async function ensureCacheClone(
   ]);
 }
 
-async function ensureCommitFetched(
-  org: string,
-  repoId: string,
-  prId: number,
-  sha: string,
-  id: string,
-): Promise<void> {
-  const cache = cacheDir(org, repoId);
-  const g = git(cache, org);
-  if (await hasCommit(g, sha)) return;
-
-  progress(id, "fetching");
-  // Primary: fetch the exact commit by SHA (ADO allows any-SHA wants).
-  try {
-    await g.raw(["fetch", "--filter=blob:none", "--no-tags", "origin", sha]);
-  } catch {
-    // Fallback: fetch the PR head ref, whose history contains the source commit.
-    await g.raw([
-      "fetch",
-      "--filter=blob:none",
-      "--no-tags",
-      "origin",
-      `+refs/pull/${prId}/head:refs/remotes/origin/pr/${prId}/head`,
-    ]);
-  }
-  if (!(await hasCommit(g, sha))) {
-    throw new Error(`commit ${sha.slice(0, 8)} not found after fetch`);
-  }
-}
-
 async function addOrMoveWorktree(
   org: string,
   repoId: string,
-  prId: number,
   sha: string,
   id: string,
 ): Promise<void> {
   const cache = cacheDir(org, repoId);
-  const wtPath = prWorktreePath(org, repoId, prId);
+  const wtPath = checkoutPath(org, repoId);
   const g = git(cache, org);
   progress(id, "checkingOut");
 
@@ -240,10 +257,10 @@ async function worktreeHeadSha(wtPath: string): Promise<string | null> {
 
 // ---- removal + LRU eviction ----
 
-export async function removeWorktree(org: string, repoId: string, prId: number): Promise<void> {
+export async function removeWorktree(org: string, repoId: string): Promise<void> {
   const cache = cacheDir(org, repoId);
-  const wtPath = prWorktreePath(org, repoId, prId);
-  const id = worktreeId(org, repoId, prId);
+  const wtPath = checkoutPath(org, repoId);
+  const id = worktreeId(org, repoId);
   if (existsSync(cache)) {
     await git(cache, org)
       .raw(["worktree", "remove", "--force", wtPath])
@@ -255,6 +272,11 @@ export async function removeWorktree(org: string, repoId: string, prId: number):
   await rm(wtPath, { recursive: true, force: true }).catch(() => {});
   accessMem.delete(id);
   cacheSet(`${ACCESS_PREFIX}${id}`, 0, 0);
+}
+
+/** Removes a legacy per-PR worktree dir (pre one-checkout-per-repo). Best-effort. */
+async function removeLegacyDir(path: string): Promise<void> {
+  await rm(path, { recursive: true, force: true }).catch(() => {});
 }
 
 async function dirSize(dir: string): Promise<number> {
@@ -306,9 +328,11 @@ export async function evictToCapacity(capBytes = config.worktreeDiskCapBytes): P
       if (usage <= capBytes) break;
       if (inFlight.has(v.id)) continue;
       if (active.has(v.id)) continue;
-      if (now - (lastAccess(v.id) ?? 0) < EVICTION_GRACE_MS) continue;
+      // Legacy pr-* dirs have no live access record; reclaim them immediately.
+      if (!v.legacy && now - (lastAccess(v.id) ?? 0) < EVICTION_GRACE_MS) continue;
       const size = await dirSize(v.path);
-      await removeWorktree(v.org, v.repoId, v.prId);
+      if (v.legacy) await removeLegacyDir(v.path);
+      else await removeWorktree(v.org, v.repoId);
       usage -= size;
       evicted.push(v.id);
     }
@@ -323,10 +347,15 @@ interface WorktreeRef {
   path: string;
   org: string;
   repoId: string;
-  prId: number;
+  /** A leftover per-PR dir from the old layout — evict by path, not via git. */
+  legacy?: boolean;
 }
 
-/** Scans the worktrees dir for pr-<id> directories across all orgs/repos. */
+/**
+ * Scans the worktrees dir for the per-repo `checkout/` directories, plus any
+ * leftover legacy `pr-<id>/` dirs from the old per-PR layout (flagged so eviction
+ * reclaims them rather than leaking disk).
+ */
 async function listWorktrees(): Promise<WorktreeRef[]> {
   const out: WorktreeRef[] = [];
   const orgs = await readdir(paths.worktrees, { withFileTypes: true }).catch(() => []);
@@ -337,19 +366,26 @@ async function listWorktrees(): Promise<WorktreeRef[]> {
     );
     for (const r of repos) {
       if (!r.isDirectory()) continue;
-      const prDir = join(paths.worktrees, o.name, r.name);
-      const entries = await readdir(prDir, { withFileTypes: true }).catch(() => []);
+      const repoPath = join(paths.worktrees, o.name, r.name);
+      const entries = await readdir(repoPath, { withFileTypes: true }).catch(() => []);
       for (const e of entries) {
-        const m = e.isDirectory() && /^pr-(\d+)$/.exec(e.name);
-        if (!m) continue;
-        const prId = Number(m[1]);
-        out.push({
-          id: `${o.name}/${r.name}/pr-${prId}`,
-          path: join(prDir, e.name),
-          org: o.name,
-          repoId: r.name,
-          prId,
-        });
+        if (!e.isDirectory()) continue;
+        if (e.name === "checkout") {
+          out.push({
+            id: `${o.name}/${r.name}`,
+            path: join(repoPath, e.name),
+            org: o.name,
+            repoId: r.name,
+          });
+        } else if (/^pr-\d+$/.test(e.name)) {
+          out.push({
+            id: `${o.name}/${r.name}/${e.name}`,
+            path: join(repoPath, e.name),
+            org: o.name,
+            repoId: r.name,
+            legacy: true,
+          });
+        }
       }
     }
   }

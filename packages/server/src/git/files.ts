@@ -65,24 +65,45 @@ export async function readWorktreeFile(
   return { content: buf.toString("utf8"), binary: false };
 }
 
-/** Runs ripgrep over the worktree, returning JSON match hits. */
+export interface SearchWorktreeOptions {
+  /** Total hit cap across all files (default 1000). */
+  maxHits?: number;
+  /** Per-file hit cap (default 50). */
+  maxPerFile?: number;
+  regex?: boolean;
+  caseSensitive?: boolean;
+  wholeWord?: boolean;
+  includeGlobs?: string[];
+  excludeGlobs?: string[];
+  /** Restrict the search to these repo-relative paths (leading slash ok). */
+  paths?: string[];
+}
+
+/** Runs ripgrep over the worktree (or a subset of paths), returning JSON match hits. */
 export async function searchWorktree(
   worktreePath: string,
   query: string,
-  opts: { maxHits?: number; regex?: boolean } = {},
+  opts: SearchWorktreeOptions = {},
 ): Promise<SearchHit[]> {
   assertInWorktrees(worktreePath);
   if (!query.trim()) return [];
-  const maxHits = opts.maxHits ?? 200;
+  const maxHits = opts.maxHits ?? 1000;
+  const maxPerFile = opts.maxPerFile ?? 50;
 
-  const args = [
-    "--json",
-    "--max-count",
-    "5", // per-file cap
-    "--smart-case",
-  ];
+  const args = ["--json", "--max-count", String(maxPerFile)];
+  // Case: explicit case-sensitive, else smart-case (lowercase query => insensitive).
+  args.push(opts.caseSensitive ? "--case-sensitive" : "--smart-case");
   if (!opts.regex) args.push("--fixed-strings");
-  args.push("--", query, ".");
+  if (opts.wholeWord) args.push("--word-regexp");
+  for (const g of opts.includeGlobs ?? []) if (g.trim()) args.push("--glob", g.trim());
+  for (const g of opts.excludeGlobs ?? []) if (g.trim()) args.push("--glob", `!${g.trim()}`);
+
+  // Trailing path args: an explicit changed-file set, or the whole worktree (".").
+  const searchPaths =
+    opts.paths && opts.paths.length > 0
+      ? opts.paths.map((p) => p.replace(/^\/+/, "")).filter(Boolean)
+      : ["."];
+  args.push("--", query, ...searchPaths);
 
   const proc = Bun.spawn(["rg", ...args], {
     cwd: worktreePath,
@@ -109,6 +130,7 @@ export async function searchWorktree(
       path: "/" + d.path.text.replace(/^\.\//, ""),
       line: d.line_number,
       column: (submatch?.start ?? 0) + 1,
+      endColumn: (submatch?.end ?? submatch?.start ?? 0) + 1,
       preview: d.lines.text.replace(/\n$/, "").slice(0, 200),
     });
     if (hits.length >= maxHits) break;

@@ -2,7 +2,12 @@ import type { PrStatus } from "@agent-ops/shared";
 import { json, errorResponse } from "../http.js";
 import { AdoClient } from "../ado/client.js";
 import { PatTokenProvider } from "../ado/token-provider.js";
-import { getConnectionData, listPullRequests, listRepositories } from "../ado/api.js";
+import {
+  getConnectionData,
+  listBranches,
+  listPullRequests,
+  listRepositories,
+} from "../ado/api.js";
 import { cached } from "../store/cache.js";
 
 /** Read routes backed by the Azure DevOps REST API. */
@@ -38,6 +43,21 @@ export async function handleAdoRoutes(req: Request, url: URL): Promise<Response 
     const { org, client } = clientFromQuery(url);
     const repos = await cached(`repos:${org}`, 5 * 60_000, now(), () => listRepositories(client));
     return json({ repos });
+  }
+
+  // GET /api/branches?org=&repositoryId=&search= -> branch names (cached 1m)
+  if (url.pathname === "/api/branches") {
+    const { org, client } = clientFromQuery(url);
+    const repositoryId = url.searchParams.get("repositoryId") ?? "";
+    const search = url.searchParams.get("search") ?? undefined;
+    if (!repositoryId) return errorResponse("bad-request", "repositoryId required", 400);
+    // Only cache the unfiltered list; filtered (type-ahead) queries pass through.
+    const branches = search
+      ? await listBranches(client, repositoryId, search)
+      : await cached(`branches:${org}:${repositoryId}`, 60_000, now(), () =>
+          listBranches(client, repositoryId),
+        );
+    return json({ branches });
   }
 
   // GET /api/prs?org=&repositoryId=&project=&status=&creatorId=&reviewerId=&top=&skip=

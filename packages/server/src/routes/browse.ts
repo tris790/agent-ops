@@ -2,52 +2,81 @@ import { join } from "node:path";
 import { json, BadRequestError } from "../http.js";
 import { paths } from "../config.js";
 import { listTree, readWorktreeFile, searchWorktree } from "../git/files.js";
+import { ensureWorktreeAtRef } from "../git/worktree.js";
+import { getRepository } from "../ado/api.js";
+import { AdoClient } from "../ado/client.js";
+import { tokens } from "./ado.js";
+import { cached } from "../store/cache.js";
 
 /**
- * Code browse + search routes, served from the on-disk PR worktree: file tree,
- * file content (incl. unmodified files for go-to-definition targets), and
- * ripgrep search scoped to the worktree.
+ * Code browse + search routes, served from the repo's single on-disk worktree:
+ * file tree, file content (incl. unmodified files for go-to-definition targets),
+ * ripgrep search, and a branch-worktree ensure (for the standalone Code tab).
+ *
+ * The worktree is addressed by (org, repoId) only — whoever ensured it (a PR or a
+ * branch) decided which ref is checked out; these routes are ref-agnostic readers.
  */
 
 const sanitize = (s: string) => s.replace(/[^A-Za-z0-9._-]/g, "_");
-function worktreePath(org: string, repoId: string, prId: number): string {
-  return join(paths.worktrees, sanitize(org), sanitize(repoId), `pr-${prId}`);
+function worktreePath(org: string, repoId: string): string {
+  return join(paths.worktrees, sanitize(org), sanitize(repoId), "checkout");
 }
 
-function ids(url: URL): { org: string; repoId: string; prId: number } {
+function ids(url: URL): { org: string; repoId: string } {
   const org = url.searchParams.get("org");
   const repoId = url.searchParams.get("repositoryId");
-  const prId = url.searchParams.get("pullRequestId");
-  if (!org || !repoId || !prId) throw new BadRequestError("org, repositoryId, pullRequestId required");
-  return { org, repoId, prId: Number(prId) };
+  if (!org || !repoId) throw new BadRequestError("org, repositoryId required");
+  return { org, repoId };
 }
 
 export async function handleBrowseRoutes(req: Request, url: URL): Promise<Response | null> {
+  // POST /api/browse/worktree?org=&repositoryId=&ref=<branch>
+  // Clones the repo (if needed) and checks out the branch into the repo worktree.
+  if (url.pathname === "/api/browse/worktree" && req.method === "POST") {
+    const { org, repoId } = ids(url);
+    const ref = url.searchParams.get("ref");
+    if (!ref) throw new BadRequestError("ref required");
+    const client = AdoClient.forOrg(org, tokens);
+    const repo = await cached(`repo:${org}:${repoId}`, 60 * 60_000, Date.now(), () =>
+      getRepository(client, repoId),
+    );
+    if (!repo.remoteUrl) throw new BadRequestError("repository has no remote URL");
+    const handle = await ensureWorktreeAtRef(org, repoId, repo.remoteUrl, ref);
+    return json({ path: handle.path, commit: handle.commit });
+  }
+
   if (req.method !== "GET") return null;
 
-  // GET /api/browse/tree?org=&repositoryId=&pullRequestId=&path=/
+  // GET /api/browse/tree?org=&repositoryId=&path=/
   if (url.pathname === "/api/browse/tree") {
-    const { org, repoId, prId } = ids(url);
+    const { org, repoId } = ids(url);
     const dir = url.searchParams.get("path") ?? "/";
-    const nodes = await listTree(worktreePath(org, repoId, prId), dir);
+    const nodes = await listTree(worktreePath(org, repoId), dir);
     return json({ nodes });
   }
 
-  // GET /api/browse/file?org=&repositoryId=&pullRequestId=&path=/src/x.ts
+  // GET /api/browse/file?org=&repositoryId=&path=/src/x.ts
   if (url.pathname === "/api/browse/file") {
-    const { org, repoId, prId } = ids(url);
+    const { org, repoId } = ids(url);
     const path = url.searchParams.get("path");
     if (!path) throw new BadRequestError("path required");
-    const file = await readWorktreeFile(worktreePath(org, repoId, prId), path);
+    const file = await readWorktreeFile(worktreePath(org, repoId), path);
     return json({ path, ...file });
   }
 
-  // GET /api/browse/search?org=&repositoryId=&pullRequestId=&q=&regex=
+  // GET /api/browse/search?org=&repositoryId=&q=&regex=&case=&word=&include=&exclude=&path=
+  // `include`/`exclude`/`path` may repeat. `path` restricts to a changed-file set.
   if (url.pathname === "/api/browse/search") {
-    const { org, repoId, prId } = ids(url);
+    const { org, repoId } = ids(url);
     const q = url.searchParams.get("q") ?? "";
-    const regex = url.searchParams.get("regex") === "1";
-    const hits = await searchWorktree(worktreePath(org, repoId, prId), q, { regex });
+    const hits = await searchWorktree(worktreePath(org, repoId), q, {
+      regex: url.searchParams.get("regex") === "1",
+      caseSensitive: url.searchParams.get("case") === "1",
+      wholeWord: url.searchParams.get("word") === "1",
+      includeGlobs: url.searchParams.getAll("include"),
+      excludeGlobs: url.searchParams.getAll("exclude"),
+      paths: url.searchParams.getAll("path"),
+    });
     return json({ hits });
   }
 
