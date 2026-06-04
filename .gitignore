@@ -1,0 +1,22 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+packages/web/dist/
+
+# Runtime data (self-contained, never committed)
+/lsp/
+/worktrees/
+/data/
+
+# Logs / env
+*.log
+.env
+.env.local
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.tsbuildinfo
