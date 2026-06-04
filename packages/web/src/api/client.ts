@@ -183,18 +183,18 @@ export const api = {
       `/api/pr/worktree?${qs({ org, repositoryId, pullRequestId })}`,
       { method: "POST" },
     ),
-  lspDetect: (org: string, repositoryId: string) =>
+  lspDetect: (org: string, repositoryId: string, ref?: string) =>
     request<{
       languages: { lang: string; serverName: string; installed: boolean }[];
       worktreeId: string;
-    }>(`/api/lsp/detect?${qs({ org, repositoryId })}`),
+    }>(`/api/lsp/detect?${qs({ org, repositoryId, ref })}`),
   lspInstall: (lang: string) =>
     request<{ ok: boolean; error?: string }>(`/api/lsp/install?${qs({ lang })}`, {
       method: "POST",
     }),
-  lspSession: (org: string, repositoryId: string, lang: string) =>
+  lspSession: (org: string, repositoryId: string, lang: string, ref?: string) =>
     request<{ status: "ready" | "install-required"; serverName?: string }>(
-      `/api/lsp/session?${qs({ org, repositoryId, lang })}`,
+      `/api/lsp/session?${qs({ org, repositoryId, lang, ref })}`,
       { method: "POST" },
     ),
   /** Clone (if needed) + check out a branch into the repo's single worktree. */

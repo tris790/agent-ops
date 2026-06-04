@@ -64,17 +64,22 @@ function ensureProviders(m: typeof monaco, language: string): void {
     method: string,
     model: monaco.editor.ITextModel,
     position: monaco.IPosition,
+    fallbackMethod?: string,
   ) => {
     const conn = connectionForModel(model.uri.toString(), language);
     if (!conn) return null;
     await conn.ensureOpen(model);
-    const result = await conn
-      .request(method, {
-        textDocument: { uri: model.uri.toString() },
-        position: toLspPos(position),
-      })
-      .catch(() => null);
-    return toLocations(result) ?? undefined;
+    const params = {
+      textDocument: { uri: model.uri.toString() },
+      position: toLspPos(position),
+    };
+    const result = await conn.request(method, params).catch(() => null);
+    const locations = toLocations(result);
+    if ((locations == null || locations.length === 0) && fallbackMethod) {
+      const fallback = await conn.request(fallbackMethod, params).catch(() => null);
+      return toLocations(fallback) ?? undefined;
+    }
+    return locations ?? undefined;
   };
 
   m.languages.registerHoverProvider(language, {
@@ -107,7 +112,12 @@ function ensureProviders(m: typeof monaco, language: string): void {
 
   m.languages.registerTypeDefinitionProvider(language, {
     provideTypeDefinition: async (model, position) => {
-      return requestLocations("textDocument/typeDefinition", model, position);
+      return requestLocations(
+        "textDocument/typeDefinition",
+        model,
+        position,
+        "textDocument/definition",
+      );
     },
   });
 
@@ -142,6 +152,7 @@ class Connection {
   private openDocs = new Map<string, Promise<void>>();
   private readonly workspaceFolders: Array<{ uri: string; name: string }>;
   ready: Promise<void>;
+  closed = false;
   /** Resolves when the server's project model is loaded enough to answer queries.
    *  Most servers: immediately after `initialized`. Roslyn (C#): only after
    *  `workspace/projectInitializationComplete`. */
@@ -160,7 +171,10 @@ class Connection {
     this.ws = new WebSocket(`${proto}//${location.host}/lsp?key=${encodeURIComponent(key)}`);
     this.ready = new Promise((resolve, reject) => {
       this.ws.addEventListener("error", () => reject(new Error("LSP socket error")));
-      this.ws.addEventListener("close", () => this.failAllPending());
+      this.ws.addEventListener("close", () => {
+        this.closed = true;
+        this.failAllPending();
+      });
       this.ws.addEventListener("message", (ev) => this.onMessage(ev));
       this.ws.addEventListener("open", async () => {
         await this.request("initialize", {
@@ -332,6 +346,7 @@ class Connection {
 
   dispose(): void {
     try {
+      this.closed = true;
       this.ws.close();
     } catch {
       /* already closed */
@@ -354,6 +369,11 @@ export async function attachLsp(
   ensureProviders(m, desc.language);
 
   let conn = connections.get(desc.url);
+  if (conn?.closed) {
+    connections.delete(desc.url);
+    refCounts.delete(desc.url);
+    conn = undefined;
+  }
   if (!conn) {
     conn = new Connection(m, desc.url, desc.rootUri, desc.language);
     connections.set(desc.url, conn);

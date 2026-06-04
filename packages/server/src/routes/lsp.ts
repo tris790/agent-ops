@@ -16,15 +16,17 @@ function worktreePath(org: string, repoId: string): string {
   const sanitize = (s: string) => s.replace(/[^A-Za-z0-9._-]/g, "_");
   return join(paths.worktrees, sanitize(org), sanitize(repoId), "checkout");
 }
-function worktreeId(org: string, repoId: string): string {
+function worktreeId(org: string, repoId: string, ref?: string): string {
   const sanitize = (s: string) => s.replace(/[^A-Za-z0-9._-]/g, "_");
-  return `${sanitize(org)}/${sanitize(repoId)}`;
+  const base = `${sanitize(org)}/${sanitize(repoId)}`;
+  return ref ? `${base}@${sanitize(ref)}` : base;
 }
 
 export async function handleLspRoutes(req: Request, url: URL): Promise<Response | null> {
   // GET /api/lsp/detect?org=&repositoryId=
   if (url.pathname === "/api/lsp/detect" && req.method === "GET") {
     const { org, repoId } = ids(url);
+    const ref = url.searchParams.get("ref") ?? undefined;
     const dir = worktreePath(org, repoId);
     const langs = await detectLanguages(dir);
     const statuses = await Promise.all(
@@ -34,7 +36,7 @@ export async function handleLspRoutes(req: Request, url: URL): Promise<Response 
         return { lang, serverName: spec.serverName, installed };
       }),
     );
-    return json({ languages: statuses, worktreeId: worktreeId(org, repoId) });
+    return json({ languages: statuses, worktreeId: worktreeId(org, repoId, ref) });
   }
 
   // POST /api/lsp/install?lang=  -> install a server into lsp/<lang>/
@@ -65,8 +67,9 @@ export async function handleLspRoutes(req: Request, url: URL): Promise<Response 
   if (url.pathname === "/api/lsp/session" && req.method === "POST") {
     const { org, repoId } = ids(url);
     const lang = (url.searchParams.get("lang") ?? "") as Lang;
+    const ref = url.searchParams.get("ref") ?? undefined;
     const dir = worktreePath(org, repoId);
-    const wid = worktreeId(org, repoId);
+    const wid = worktreeId(org, repoId, ref);
     const result = await ensureSession(wid, lang, dir);
     if (result.status === "install-required") {
       emit({

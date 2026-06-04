@@ -1,4 +1,7 @@
-import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { join, relative, resolve, sep } from "node:path";
+import { readFile, stat } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { json, BadRequestError } from "../http.js";
 import { paths } from "../config.js";
 import { listTree, readWorktreeFile, searchWorktree } from "../git/files.js";
@@ -20,6 +23,24 @@ import { cached } from "../store/cache.js";
 const sanitize = (s: string) => s.replace(/[^A-Za-z0-9._-]/g, "_");
 function worktreePath(org: string, repoId: string): string {
   return join(paths.worktrees, sanitize(org), sanitize(repoId), "checkout");
+}
+
+const metadataSourceRoot = resolve(tmpdir(), "MetadataAsSource");
+
+function isMetadataSourcePath(path: string): boolean {
+  const abs = resolve(path);
+  const rel = relative(metadataSourceRoot, abs);
+  return rel !== "" && !rel.startsWith("..") && !rel.startsWith(sep);
+}
+
+async function readMetadataSourceFile(path: string): Promise<{ content: string | null; binary: boolean }> {
+  const abs = resolve(path);
+  if (!isMetadataSourcePath(abs) || !existsSync(abs)) return { content: null, binary: false };
+  const info = await stat(abs);
+  if (!info.isFile() || info.size > 5_000_000) return { content: null, binary: false };
+  const buf = await readFile(abs);
+  if (buf.includes(0)) return { content: null, binary: true };
+  return { content: buf.toString("utf8"), binary: false };
 }
 
 function ids(url: URL): { org: string; repoId: string } {
@@ -60,7 +81,9 @@ export async function handleBrowseRoutes(req: Request, url: URL): Promise<Respon
     const { org, repoId } = ids(url);
     const path = url.searchParams.get("path");
     if (!path) throw new BadRequestError("path required");
-    const file = await readWorktreeFile(worktreePath(org, repoId), path);
+    const file = isMetadataSourcePath(path)
+      ? await readMetadataSourceFile(path)
+      : await readWorktreeFile(worktreePath(org, repoId), path);
     return json({ path, ...file });
   }
 

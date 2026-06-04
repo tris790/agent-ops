@@ -188,6 +188,7 @@ function FileViewer({
   descriptorFor: (path: string) => Promise<LspDescriptor | null>;
   onNavigate: (path: string, line?: number) => void;
 }) {
+  const externalMetadataSource = isMetadataSourcePath(path);
   const file = useQuery({
     queryKey: ["browseFile", org, repositoryId, worktreeRef, path],
     queryFn: () => api.browseFile(org, repositoryId, path),
@@ -196,11 +197,14 @@ function FileViewer({
   useEffect(() => {
     let cancelled = false;
     setDescriptor(null);
+    if (externalMetadataSource) return () => {
+      cancelled = true;
+    };
     descriptorFor(path).then((d) => !cancelled && setDescriptor(d)).catch(() => {});
     return () => {
       cancelled = true;
     };
-  }, [path, descriptorFor]);
+  }, [path, descriptorFor, externalMetadataSource]);
 
   if (file.isLoading) return <div className="editor-loading">Loading…</div>;
   if (file.data?.binary) return <div className="editor-loading">Binary file.</div>;
@@ -213,13 +217,17 @@ function FileViewer({
           path={path}
           language={languageForPath(path)}
           content={file.data?.content ?? ""}
-          lsp={descriptor ?? undefined}
+          lsp={externalMetadataSource ? undefined : descriptor ?? undefined}
           revealLine={revealLine}
           onNavigate={onNavigate}
         />
       </div>
     </div>
   );
+}
+
+function isMetadataSourcePath(path: string): boolean {
+  return path.startsWith("/tmp/MetadataAsSource/");
 }
 
 function SearchBox({

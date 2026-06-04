@@ -7,7 +7,7 @@ import { emit } from "../events.js";
 import { getOrgRow } from "../store/orgs.js";
 import { patBasicHeader } from "../ado/token-provider.js";
 import { cacheGet, cacheSet } from "../store/cache.js";
-import { activeWorktreeIds } from "../lsp/manager.js";
+import { activeWorktreeIds, stopSessionsForWorktree } from "../lsp/manager.js";
 
 /**
  * Git worktree manager — clones a repo once and checks out whatever ref is needed
@@ -132,6 +132,7 @@ export function ensureWorktreeAtRef(
         return { path: wtPath, commit: sha };
       }
 
+      stopSessionsForWorktree(id);
       await addOrMoveWorktree(org, repoId, sha, id);
       progress(id, "ready");
       touchWorktree(id);

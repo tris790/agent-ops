@@ -57,7 +57,12 @@ export function PrView({
     () => api.ensureWorktree(org, repositoryId, pullRequestId),
     [org, repositoryId, pullRequestId],
   );
-  const lsp = useLsp(org, repositoryId, ensureWorktree, `pr-${pullRequestId}`);
+  const lsp = useLsp(
+    org,
+    repositoryId,
+    ensureWorktree,
+    diff.data?.sourceCommit ?? `pr-${pullRequestId}`,
+  );
 
   // Persisted UI prefs (survive F5).
   const [layout, setLayout] = usePersistedState<DiffLayout>("prDiffLayout", "side-by-side");
@@ -71,6 +76,7 @@ export function PrView({
   // history with every click; explicit jumps (go-to-def) push a new entry.
   const mode = route.mode ?? "diff";
   const changes = diff.data?.changes ?? [];
+  const worktreeRef = diff.data?.sourceCommit ?? `pr-${pullRequestId}`;
   const current = route.file ?? changes[0]?.path ?? null;
   const viewedSet = useMemo(() => new Set(viewed.data?.paths ?? []), [viewed.data]);
 
@@ -170,7 +176,7 @@ export function PrView({
         <Browse
           org={org}
           repositoryId={repositoryId}
-          worktreeRef={`pr-${pullRequestId}`}
+          worktreeRef={worktreeRef}
           ensure={ensureWorktree}
           path={route.file}
           line={route.line}
@@ -184,7 +190,7 @@ export function PrView({
             <PrSearchPanel
               org={org}
               repositoryId={repositoryId}
-              worktreeRef={`pr-${pullRequestId}`}
+              worktreeRef={worktreeRef}
               changedPaths={changes.map((c) => c.path)}
               onOpenHit={(hit) => {
                 setSelected(hit.path);

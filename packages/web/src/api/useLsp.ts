@@ -44,19 +44,20 @@ function serverLangFor(monacoLang: string): string | null {
 /**
  * @param ensure   ensures the repo's worktree is checked out at the desired ref
  *                 (PR source commit or a branch) and returns its on-disk path.
- * @param ensureKey a stable string for the current ref (prId or branch); changing
+ * @param ensureKey a stable string for the current ref (commit or branch); changing
  *                 it re-runs ensure + detection (e.g. when switching PR/branch).
  */
 export function useLsp(
   org: string,
   repositoryId: string,
-  ensure: () => Promise<{ path: string }>,
+  ensure: () => Promise<{ path: string; commit?: string }>,
   ensureKey: string,
 ) {
   const [navState, setNavState] = useState<NavState>("idle");
   const [worktreeId, setWorktreeId] = useState<string | null>(null);
   const [langs, setLangs] = useState<LangStatus[]>([]);
   const [rootUri, setRootUri] = useState<string | null>(null);
+  const [sessionRef, setSessionRef] = useState<string | null>(null);
   const startedSessions = useRef(new Set<string>());
   // Hold `ensure` in a ref so a new inline closure each render doesn't re-fire the
   // effect; ensureKey is the real trigger.
@@ -67,14 +68,20 @@ export function useLsp(
   useEffect(() => {
     let cancelled = false;
     setNavState("preparing");
+    setWorktreeId(null);
+    setLangs([]);
+    setRootUri(null);
+    setSessionRef(null);
     // Reset session memory so a re-checked-out worktree's servers start fresh.
     startedSessions.current = new Set();
     (async () => {
       try {
         const wt = await ensureRef.current();
         if (cancelled) return;
+        const ref = wt.commit ?? ensureKey;
+        setSessionRef(ref);
         setRootUri(`file://${wt.path}`);
-        const detected = await api.lspDetect(org, repositoryId);
+        const detected = await api.lspDetect(org, repositoryId, ref);
         if (cancelled) return;
         setWorktreeId(detected.worktreeId);
         setLangs(detected.languages);
@@ -93,14 +100,14 @@ export function useLsp(
       setNavState("preparing");
       try {
         await api.lspInstall(lang);
-        const detected = await api.lspDetect(org, repositoryId);
+        const detected = await api.lspDetect(org, repositoryId, sessionRef ?? ensureKey);
         setLangs(detected.languages);
         setNavState(detected.languages.some((l) => !l.installed) ? "install-required" : "ready");
       } catch {
         setNavState("error");
       }
     },
-    [org, repositoryId],
+    [org, repositoryId, sessionRef, ensureKey],
   );
 
   /**
@@ -117,7 +124,7 @@ export function useLsp(
       if (!status?.installed) return null;
 
       if (!startedSessions.current.has(serverLang)) {
-        const res = await api.lspSession(org, repositoryId, serverLang);
+        const res = await api.lspSession(org, repositoryId, serverLang, sessionRef ?? ensureKey);
         if (res.status !== "ready") return null;
         startedSessions.current.add(serverLang);
       }
@@ -127,7 +134,7 @@ export function useLsp(
         rootUri,
       };
     },
-    [worktreeId, rootUri, langs, org, repositoryId],
+    [worktreeId, rootUri, langs, org, repositoryId, sessionRef, ensureKey],
   );
 
   const missing = langs.filter((l) => !l.installed);

@@ -329,12 +329,16 @@ export function getSessionKey(worktreeId: string, lang: Lang): string {
   return sessionKey(worktreeId, lang);
 }
 
+function baseWorktreeId(sessionWorktreeId: string): string {
+  return sessionWorktreeId.split("@")[0] ?? sessionWorktreeId;
+}
+
 /** Worktree ids that currently have a live language-server session. */
 export function activeWorktreeIds(): Set<string> {
   const ids = new Set<string>();
   for (const key of sessions.keys()) {
     const wid = key.split("::")[0];
-    if (wid) ids.add(wid);
+    if (wid) ids.add(baseWorktreeId(wid));
   }
   return ids;
 }
@@ -353,6 +357,14 @@ export function stopSession(key: string): void {
     /* already dead */
   }
   sessions.delete(key);
+}
+
+/** Stops all language servers for a repo checkout before that checkout is moved. */
+export function stopSessionsForWorktree(worktreeId: string): void {
+  for (const key of [...sessions.keys()]) {
+    const wid = key.split("::")[0];
+    if (wid && baseWorktreeId(wid) === worktreeId) stopSession(key);
+  }
 }
 
 // Idle reaper: kill servers with no recent activity to bound memory.

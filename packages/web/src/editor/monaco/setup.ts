@@ -74,10 +74,10 @@ export function setupMonaco(): typeof monaco {
     openCodeEditor(_source, resource, selection) {
       const handler = navigationHandler;
       if (!handler) return false;
-      // resource is a worktree-absolute file:// URI; convert back to repo-relative.
-      const path = resource.path.replace(workspaceRootPath, "") || resource.path;
+      const path = navigablePath(resource.path);
+      if (!path) return false;
       const line = selection && "startLineNumber" in selection ? selection.startLineNumber : 1;
-      return handler(path.startsWith("/") ? path : "/" + path, line);
+      return handler(path, line);
     },
   });
 
@@ -141,6 +141,13 @@ export function applyNavKeybindings(ed: {
 /** Host navigation handler + workspace root, set by the active editor. */
 let navigationHandler: ((path: string, line: number) => boolean) | null = null;
 let workspaceRootPath = "";
+
+function navigablePath(resourcePath: string): string | null {
+  const root = workspaceRootPath.replace(/\/+$/, "");
+  if (root && resourcePath.startsWith(`${root}/`)) return resourcePath.slice(root.length);
+  if (resourcePath.startsWith("/tmp/MetadataAsSource/")) return resourcePath;
+  return null;
+}
 
 export function setNavigation(
   handler: ((path: string, line: number) => boolean) | null,
