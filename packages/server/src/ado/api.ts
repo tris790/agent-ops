@@ -52,6 +52,89 @@ export async function listRepositories(client: AdoClient): Promise<AdoRepository
   return client.getList("_apis/git/repositories", adoRepository);
 }
 
+/** A Graph subject from `_apis/graph/users`. `descriptor` resolves to the IMS id. */
+const graphUser = z
+  .object({
+    descriptor: z.string(),
+    displayName: z.string().optional(),
+    mailAddress: z.string().optional(),
+    principalName: z.string().optional(),
+    directoryAlias: z.string().optional(),
+    subjectKind: z.string().optional(),
+  })
+  .passthrough();
+
+/** An IMS identity from `_apis/identities`. `id` matches a PR's `createdBy.id`. */
+const imsIdentity = z
+  .object({
+    id: z.string(),
+    providerDisplayName: z.string().optional(),
+    subjectDescriptor: z.string().optional(),
+    isContainer: z.boolean().optional(),
+  })
+  .passthrough();
+
+/**
+ * Every user in the org, keyed by the IMS identity id used as a PR's `createdBy.id`
+ * (so the author filter matches). The Graph user list exposes only descriptors, so
+ * we resolve those to IMS ids via `_apis/identities`. Both live on the vssps host.
+ * Cached by callers — this makes several round-trips.
+ */
+export async function listOrgUsers(
+  client: AdoClient,
+): Promise<{ id: string; displayName?: string }[]> {
+  const graphBase = client.graphBaseUrl();
+  const users = await client.getAllPaged(`${graphBase}/_apis/graph/users`, graphUser, {
+    apiVersion: "7.1-preview.1",
+  });
+  // Drop groups/scopes; they are never PR authors. (Service identities are kept.)
+  const people = users.filter((u) => u.subjectKind === "user");
+  // Best human-readable label per descriptor, from the Graph user (richer than IMS).
+  const labelByDescriptor = new Map(people.map((u) => [u.descriptor, graphLabel(u)]));
+
+  const byId = new Map<string, string>();
+  for (const batch of chunk(people.map((u) => u.descriptor), 100)) {
+    const identities = await client.getList(`${graphBase}/_apis/identities`, imsIdentity, {
+      query: { subjectDescriptors: batch.join(",") },
+    });
+    for (const ident of identities) {
+      if (!ident.id || ident.isContainer) continue; // isContainer => group, not a person
+      const label =
+        textualName(ident.providerDisplayName) ??
+        (ident.subjectDescriptor ? labelByDescriptor.get(ident.subjectDescriptor) : undefined);
+      // Skip groups (named "[Scope]\Group") and anyone we can't name textually.
+      if (label && !/^\[.+]\\/.test(label)) byId.set(ident.id, label);
+    }
+  }
+  return [...byId].map(([id, displayName]) => ({ id, displayName }));
+}
+
+/** First human-readable name for a Graph user, or undefined if none. */
+function graphLabel(u: z.infer<typeof graphUser>): string | undefined {
+  // principalName for AAD users is their email; for service identities it's a GUID.
+  return (
+    textualName(u.displayName) ??
+    textualName(u.mailAddress) ??
+    textualName(u.directoryAlias) ??
+    textualName(u.principalName)
+  );
+}
+
+/** A label only if it's a real name — not a bare GUID (service/build identities). */
+function textualName(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value.trim())
+    ? undefined
+    : value;
+}
+
+/** Splits `items` into sub-arrays of at most `size`. */
+function chunk<T>(items: T[], size: number): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
+  return out;
+}
+
 const adoProject = z
   .object({ id: z.string(), name: z.string() })
   .passthrough();

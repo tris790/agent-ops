@@ -16,6 +16,11 @@ const STATUS_OPTIONS: Option[] = [
 ];
 const DEFAULT_STATUSES = ["active"];
 
+const GUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/** A label only if it's a real name, not a bare GUID (service/build identities). */
+const textualName = (value: string | undefined): string | undefined =>
+  value && !GUID_RE.test(value.trim()) ? value : undefined;
+
 /**
  * The home screen: "My pull requests" (authored by me) first, then "All active"
  * as an infinite list. Persistent multi-select filters (users / repos / status)
@@ -32,6 +37,8 @@ export function ReviewQueue({
 }) {
   const { filters, setFilters } = useFilters(org);
   const repos = useQuery({ queryKey: ["repos", org], queryFn: () => api.repos(org) });
+  // Org-wide user list for the author filter (cached). Falls back to PR authors below.
+  const users = useQuery({ queryKey: ["users", org], queryFn: () => api.users(org) });
 
   // Effective statuses: if nothing chosen yet, fall back to the default (active).
   const statuses = filters.statuses.length ? filters.statuses : DEFAULT_STATUSES;
@@ -71,16 +78,24 @@ export function ReviewQueue({
     [allPrs.data],
   );
 
-  // User filter options derive from authors seen across the loaded PRs.
+  // User filter options: the full org user list, merged with authors seen across the
+  // loaded PRs. The merge guarantees a selectable id always matches some PR's
+  // createdBy.id, and keeps the filter working if the org user list fails to load.
   const userOptions: Option[] = useMemo(() => {
     const seen = new Map<string, string>();
+    for (const u of users.data?.users ?? []) {
+      const label = textualName(u.displayName);
+      if (label) seen.set(u.id, label);
+    }
     for (const pr of [...(myPrs.data?.prs ?? []), ...flatAll]) {
-      seen.set(pr.createdBy.id, pr.createdBy.displayName ?? pr.createdBy.id);
+      // Prefer a real name; never overwrite one with, or introduce, a bare GUID.
+      const label = textualName(pr.createdBy.displayName) ?? seen.get(pr.createdBy.id);
+      if (label) seen.set(pr.createdBy.id, label);
     }
     return [...seen].map(([value, label]) => ({ value, label })).sort((a, b) =>
       a.label.localeCompare(b.label),
     );
-  }, [myPrs.data, flatAll]);
+  }, [users.data, myPrs.data, flatAll]);
 
   const applyFilters = (list: AdoPullRequest[]) => filterPrs(list, filters, statuses);
 

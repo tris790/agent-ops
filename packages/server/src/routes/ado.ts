@@ -5,6 +5,7 @@ import { PatTokenProvider } from "../ado/token-provider.js";
 import {
   getConnectionData,
   listBranches,
+  listOrgUsers,
   listPullRequests,
   listRepositories,
 } from "../ado/api.js";
@@ -43,6 +44,13 @@ export async function handleAdoRoutes(req: Request, url: URL): Promise<Response 
     const { org, client } = clientFromQuery(url);
     const repos = await cached(`repos:${org}`, 5 * 60_000, now(), () => listRepositories(client));
     return json({ repos });
+  }
+
+  // GET /api/users?org= -> all org users for the author filter (cached 30m)
+  if (url.pathname === "/api/users") {
+    const { org, client } = clientFromQuery(url);
+    const users = await cached(`users:${org}`, 30 * 60_000, now(), () => listOrgUsers(client));
+    return json({ users });
   }
 
   // GET /api/branches?org=&repositoryId=&search= -> branch names (cached 1m)

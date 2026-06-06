@@ -179,9 +179,24 @@ export function MonacoDiffView({
     decorationsRef.current = models.modified.deltaDecorations(decorationsRef.current, decos);
   }, [inlineComments, modified]);
 
+  // Update content when it arrives/changes. Declared BEFORE the search-highlight
+  // effects so that on the render where new content loads, the models are filled
+  // first and the decoration/reveal effects below see the real line count.
+  useEffect(() => {
+    const models = modelsRef.current;
+    if (!models) return;
+    models.original.setValue(original ?? "");
+    models.modified.setValue(modified ?? "");
+  }, [original, modified]);
+
   // Highlight search matches. The server-provided matches decorate the modified
   // (right) pane; we additionally re-find the same spans on the original (left)
   // pane client-side so a search reads natively across both sides of the diff.
+  //
+  // `modifiedUri` is a dep so this re-runs on a file switch — when opening a hit in
+  // a DIFFERENT file the editor/models are recreated and content loads async, so
+  // the decorations must be re-applied once the new file's content is present
+  // (`original`/`modified` deps cover that second pass).
   useEffect(() => {
     const models = modelsRef.current;
     if (!models) return;
@@ -191,21 +206,25 @@ export function MonacoDiffView({
     const isActive = (line: number, column: number) =>
       revealMatch != null && revealMatch.line === line && revealMatch.column === column;
 
-    const modDecos = matches.map((m) => ({
-      range: new monaco.Range(m.line, m.column, m.line, m.endColumn),
-      options: {
-        className: isActive(m.line, m.column) ? "search-match search-match-active" : "search-match",
-        overviewRuler: {
-          color: "rgba(234,179,8,0.7)",
-          position: monaco.editor.OverviewRulerLane.Center,
+    const modDecos = matches
+      // Guard against matches that point past the (possibly not-yet-loaded) model.
+      .filter((m) => m.line <= models.modified.getLineCount())
+      .map((m) => ({
+        range: new monaco.Range(m.line, m.column, m.line, m.endColumn),
+        options: {
+          className: isActive(m.line, m.column) ? "search-match search-match-active" : "search-match",
+          overviewRuler: {
+            color: "rgba(234,179,8,0.7)",
+            position: monaco.editor.OverviewRulerLane.Center,
+          },
         },
-      },
-    }));
+      }));
     searchDecoModRef.current = models.modified.deltaDecorations(searchDecoModRef.current, modDecos);
 
     // Mirror onto the left pane: find each modified-match's text in the original.
     const origDecos: editor.IModelDeltaDecoration[] = [];
     for (const m of matches) {
+      if (m.line > models.modified.getLineCount()) continue;
       const text = models.modified.getValueInRange(
         new monaco.Range(m.line, m.column, m.line, m.endColumn),
       );
@@ -216,16 +235,20 @@ export function MonacoDiffView({
       }
     }
     searchDecoOrigRef.current = models.original.deltaDecorations(searchDecoOrigRef.current, origDecos);
-  }, [searchMatches, revealMatch, original, modified]);
+  }, [searchMatches, revealMatch, original, modified, modifiedUri]);
 
   // Scroll the active match into view (auto-expands collapsed unchanged regions).
+  // Re-runs on file switch + once content loads (modifiedUri/modified deps), so a
+  // hit in a different file scrolls to the match after its content arrives.
   useEffect(() => {
     const ed = editorRef.current;
-    if (!ed || !revealMatch) return;
+    const models = modelsRef.current;
+    if (!ed || !models || !revealMatch) return;
+    if (revealMatch.line > models.modified.getLineCount()) return; // content not loaded yet
     const modEd = ed.getModifiedEditor();
     modEd.revealLineInCenter(revealMatch.line);
     modEd.setPosition({ lineNumber: revealMatch.line, column: revealMatch.column });
-  }, [revealMatch]);
+  }, [revealMatch, modifiedUri, modified]);
 
   // Close the composer when switching files.
   useEffect(() => setComposeLine(null), [modifiedUri]);
@@ -251,14 +274,6 @@ export function MonacoDiffView({
       detach?.();
     };
   }, [lsp, modifiedUri, onNavigate]);
-
-  // Update content when it arrives/changes.
-  useEffect(() => {
-    const models = modelsRef.current;
-    if (!models) return;
-    models.original.setValue(original ?? "");
-    models.modified.setValue(modified ?? "");
-  }, [original, modified]);
 
   // Apply layout option changes without recreating the editor.
   useEffect(() => {

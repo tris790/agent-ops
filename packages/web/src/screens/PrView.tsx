@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useRef, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { AdoThread, PrChange, SearchHit, SearchOptions } from "@agent-ops/shared";
 import { api } from "../api/client.js";
@@ -68,6 +68,8 @@ export function PrView({
   const [layout, setLayout] = usePersistedState<DiffLayout>("prDiffLayout", "side-by-side");
   const [showComments, setShowComments] = usePersistedState("prShowComments", true);
   const [showSearch, setShowSearch] = useState(false);
+  // Bumped to (re)focus the search input when the panel is opened via Ctrl/Cmd+F.
+  const [searchFocus, setSearchFocus] = useState(0);
   // The search hit currently focused; drives reveal + active highlight in the diff.
   const [activeMatch, setActiveMatch] = useState<SearchMatch & { path: string } | null>(null);
 
@@ -75,6 +77,26 @@ export function PrView({
   // and back/forward-correct. File/mode changes use replace() to avoid flooding
   // history with every click; explicit jumps (go-to-def) push a new entry.
   const mode = route.mode ?? "diff";
+
+  // Ctrl/Cmd+F toggles the PR-wide search panel (and focuses it when opening),
+  // overriding Monaco's per-file find widget so search always spans every changed
+  // file. Only active in diff mode (the panel doesn't exist while browsing).
+  useEffect(() => {
+    if (mode !== "diff") return;
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "f") {
+        e.preventDefault();
+        e.stopPropagation();
+        setShowSearch((open) => {
+          if (!open) setSearchFocus((n) => n + 1); // focus the input on open
+          return !open;
+        });
+      }
+    };
+    // Capture phase so we win over Monaco's editor-level Ctrl+F handler.
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [mode]);
   const changes = diff.data?.changes ?? [];
   const worktreeRef = diff.data?.sourceCommit ?? `pr-${pullRequestId}`;
   const current = route.file ?? changes[0]?.path ?? null;
@@ -192,6 +214,7 @@ export function PrView({
               repositoryId={repositoryId}
               worktreeRef={worktreeRef}
               changedPaths={changes.map((c) => c.path)}
+              focusSignal={searchFocus}
               onOpenHit={(hit) => {
                 setSelected(hit.path);
                 setActiveMatch({
@@ -268,6 +291,11 @@ const LAYOUT_LABEL: Record<DiffLayout, string> = {
   word: "Word",
 };
 
+/** A node in the changed-files tree: either a folder (with children) or a file. */
+type TreeNode =
+  | { kind: "dir"; name: string; path: string; children: TreeNode[] }
+  | { kind: "file"; name: string; change: PrChange };
+
 function FileTree({
   changes,
   current,
@@ -306,17 +334,30 @@ function FileTree({
 
   const reviewedCount = changes.filter((c) => viewedSet.has(c.path)).length;
   const [viewMode, setViewMode] = useFileViewMode("prFileViewMode");
+  // Collapsed folder paths (persisted). Default = all expanded.
+  const [collapsed, setCollapsed] = usePersistedState<string[]>("prTreeCollapsed", []);
+  const collapsedSet = useMemo(() => new Set(collapsed), [collapsed]);
+  const toggleFolder = (path: string) =>
+    setCollapsed(
+      collapsed.includes(path) ? collapsed.filter((p) => p !== path) : [...collapsed, path],
+    );
 
-  const renderRow = (c: PrChange, indent = 0) => {
+  const tree = useMemo(() => buildTree(changes), [changes]);
+
+  const renderFile = (c: PrChange, depth: number) => {
     const isViewed = viewedSet.has(c.path);
-    const label = viewMode === "tree" ? c.path.split("/").pop()! : c.path.replace(/^\//, "");
+    const kind = changeKind(c.changeType);
     return (
       <li
         key={c.path}
-        className={`${c.path === current ? "sel " : ""}${isViewed ? "viewed" : ""}`}
-        style={{ paddingLeft: 8 + indent * 12 }}
+        className={`tree-row file-row ${kind} ${c.path === current ? "sel " : ""}${
+          isViewed ? "viewed" : ""
+        }`}
+        style={{ paddingLeft: 6 + depth * 14 }}
         onClick={() => onSelect(c.path)}
+        title={c.path}
       >
+        <span className="tree-twistie-spacer" />
         <input
           type="checkbox"
           checked={isViewed}
@@ -324,12 +365,28 @@ function FileTree({
           onChange={(e) => setViewed.mutate({ path: c.path, v: e.target.checked })}
           title="Mark viewed"
         />
-        <span className={`change-badge ${changeKind(c.changeType)}`}>
-          {changeKind(c.changeType)[0]?.toUpperCase()}
-        </span>
-        <span className="file-path" title={c.path}>
-          {label}
-        </span>
+        <span className="file-path">{c.path.split("/").pop()}</span>
+        <span className={`change-letter ${kind}`}>{CHANGE_LETTER[kind]}</span>
+      </li>
+    );
+  };
+
+  const renderNode = (node: TreeNode, depth: number): ReactNode => {
+    if (node.kind === "file") return renderFile(node.change, depth);
+    const isCollapsed = collapsedSet.has(node.path);
+    return (
+      <li key={node.path} className="tree-dir">
+        <div
+          className="tree-row dir-row"
+          style={{ paddingLeft: 6 + depth * 14 }}
+          onClick={() => toggleFolder(node.path)}
+        >
+          <span className={`tree-chevron ${isCollapsed ? "" : "open"}`}>▶</span>
+          <span className="tree-folder-name">{node.name}</span>
+        </div>
+        {!isCollapsed && (
+          <ul>{node.children.map((child) => renderNode(child, depth + 1))}</ul>
+        )}
       </li>
     );
   };
@@ -346,31 +403,70 @@ function FileTree({
         </div>
         <ul>
           {viewMode === "list"
-            ? changes.map((c) => renderRow(c))
-            : groupByFolder(changes).map((g) => (
-                <li key={g.folder} className="tree-group">
-                  {g.folder && <div className="tree-folder">{g.folder}</div>}
-                  <ul>{g.files.map((c) => renderRow(c, g.folder ? 1 : 0))}</ul>
-                </li>
-              ))}
+            ? changes.map((c) => renderFile(c, 0))
+            : tree.map((node) => renderNode(node, 0))}
         </ul>
       </aside>
     </Resizable>
   );
 }
 
-/** Groups changed files by their parent folder for the tree view. */
-function groupByFolder(changes: PrChange[]): { folder: string; files: PrChange[] }[] {
-  const map = new Map<string, PrChange[]>();
+/** The single-letter change indicator shown on the right (VS Code style). */
+const CHANGE_LETTER: Record<ReturnType<typeof changeKind>, string> = {
+  add: "A",
+  delete: "D",
+  edit: "M",
+  rename: "R",
+};
+
+/**
+ * Builds a nested folder/file tree from the flat change list, then compacts
+ * chains of single-child folders into one node (VS Code shows `src/components`
+ * as a single row). Folders sort before files, each alphabetically.
+ */
+function buildTree(changes: PrChange[]): TreeNode[] {
+  type Dir = { dirs: Map<string, Dir>; files: PrChange[] };
+  const root: Dir = { dirs: new Map(), files: [] };
+
   for (const c of changes) {
-    const folder = c.path.replace(/^\//, "").split("/").slice(0, -1).join("/");
-    const arr = map.get(folder) ?? [];
-    arr.push(c);
-    map.set(folder, arr);
+    const segments = c.path.replace(/^\//, "").split("/");
+    const fileName = segments.pop()!;
+    let dir = root;
+    for (const seg of segments) {
+      let next = dir.dirs.get(seg);
+      if (!next) {
+        next = { dirs: new Map(), files: [] };
+        dir.dirs.set(seg, next);
+      }
+      dir = next;
+    }
+    dir.files.push(c);
   }
-  return [...map.entries()]
-    .sort((a, b) => a[0].localeCompare(b[0]))
-    .map(([folder, files]) => ({ folder, files }));
+
+  const toNodes = (dir: Dir, prefix: string): TreeNode[] => {
+    const dirNodes: TreeNode[] = [...dir.dirs.entries()]
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([name, child]) => {
+        let path = prefix ? `${prefix}/${name}` : name;
+        let label = name;
+        let cur = child;
+        // Compact single-child folder chains: `a` → `a/b` when `a` holds only `b`.
+        while (cur.files.length === 0 && cur.dirs.size === 1) {
+          const entry = cur.dirs.entries().next().value!;
+          label = `${label}/${entry[0]}`;
+          path = `${path}/${entry[0]}`;
+          cur = entry[1];
+        }
+        return { kind: "dir", name: label, path, children: toNodes(cur, path) };
+      });
+    const fileNodes: TreeNode[] = dir.files
+      .slice()
+      .sort((a, b) => a.path.localeCompare(b.path))
+      .map((change) => ({ kind: "file", name: change.path.split("/").pop()!, change }));
+    return [...dirNodes, ...fileNodes];
+  };
+
+  return toNodes(root, "");
 }
 
 /** Builds inline-comment view data for a file from the PR's threads. */
@@ -477,14 +573,26 @@ function PrSearchPanel({
   repositoryId,
   worktreeRef,
   changedPaths,
+  focusSignal,
   onOpenHit,
 }: {
   org: string;
   repositoryId: string;
   worktreeRef: string;
   changedPaths: string[];
+  /** Bumped by the host (Ctrl/Cmd+F) to focus + select the query input. */
+  focusSignal: number;
   onOpenHit: (hit: SearchHit) => void;
 }) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  // Focus + select on each Ctrl/Cmd+F (skips the initial mount value of 0).
+  useEffect(() => {
+    if (focusSignal > 0) {
+      inputRef.current?.focus();
+      inputRef.current?.select();
+    }
+  }, [focusSignal]);
+
   const [q, setQ] = useState("");
   const [submitted, setSubmitted] = useState("");
   const [regex, setRegex] = usePersistedState("prSearchRegex", false);
@@ -521,6 +629,7 @@ function PrSearchPanel({
       <aside className="pr-search">
         <div className="pr-search-controls">
           <input
+            ref={inputRef}
             className="search-input"
             placeholder="Search changed files…"
             value={q}

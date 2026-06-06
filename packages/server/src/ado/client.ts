@@ -44,6 +44,22 @@ export class AdoClient {
     return new AdoClient(org, row.base_url, tokens);
   }
 
+  /**
+   * The `vssps` sibling host for Graph / Identity endpoints, which do not live on
+   * the regular org host. Pass the result as an absolute URL to getList/getAllPaged.
+   *   https://{org}.visualstudio.com      -> https://{org}.vssps.visualstudio.com
+   *   https://dev.azure.com/{org}         -> https://vssps.dev.azure.com/{org}
+   */
+  graphBaseUrl(): string {
+    const trimmed = this.baseUrl.replace(/\/$/, "");
+    if (/\/\/dev\.azure\.com\//.test(trimmed)) {
+      return trimmed.replace("//dev.azure.com/", "//vssps.dev.azure.com/");
+    }
+    const vs = trimmed.match(/^(https?:\/\/)([^./]+)\.visualstudio\.com(.*)$/);
+    if (vs) return `${vs[1]}${vs[2]}.vssps.visualstudio.com${vs[3]}`;
+    return trimmed;
+  }
+
   /** Builds an absolute URL, appending api-version. `pathOrUrl` may be project-scoped. */
   private url(pathOrUrl: string, query?: RequestQuery, apiVersion?: string): string {
     const u = pathOrUrl.startsWith("http")

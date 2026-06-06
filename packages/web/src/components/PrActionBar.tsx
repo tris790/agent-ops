@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { AdoPullRequest, PolicyEvaluation, ReviewerVote } from "@agent-ops/shared";
 
 /**
@@ -23,7 +23,7 @@ export function PrActionBar({
   onAbandon: () => void;
 }) {
   const [showComplete, setShowComplete] = useState(false);
-  const myVote = pr?.reviewers?.find((r) => r.id === meId)?.vote ?? 0;
+  const myVote = (pr?.reviewers?.find((r) => r.id === meId)?.vote ?? 0) as ReviewerVote;
 
   const blocking = policies.filter((p) => p.isBlocking);
   const unmet = blocking.filter((p) => p.status !== "approved");
@@ -31,27 +31,7 @@ export function PrActionBar({
 
   return (
     <div className="action-bar">
-      <div className="vote-group">
-        <VoteButton label="Approve" active={myVote === 10} kind="approve" onClick={() => onVote(10)} />
-        <VoteButton
-          label="Approve w/ suggestions"
-          active={myVote === 5}
-          kind="approve"
-          onClick={() => onVote(5)}
-        />
-        <VoteButton
-          label="Wait for author"
-          active={myVote === -5}
-          kind="wait"
-          onClick={() => onVote(-5)}
-        />
-        <VoteButton label="Reject" active={myVote === -10} kind="reject" onClick={() => onVote(-10)} />
-        {myVote !== 0 && (
-          <button className="btn-ghost sm" disabled={busy} onClick={() => onVote(0)}>
-            Reset vote
-          </button>
-        )}
-      </div>
+      <VoteMenu myVote={myVote} busy={busy} onVote={onVote} />
 
       {policies.length > 0 && (
         <div className="policy-panel">
@@ -97,21 +77,71 @@ export function PrActionBar({
   );
 }
 
-function VoteButton({
-  label,
-  active,
-  kind,
-  onClick,
+type VoteOption = { vote: ReviewerVote; label: string; kind: "approve" | "wait" | "reject" };
+
+const VOTE_OPTIONS: VoteOption[] = [
+  { vote: 10, label: "Approve", kind: "approve" },
+  { vote: 5, label: "Approve w/ suggestions", kind: "approve" },
+  { vote: -5, label: "Wait for author", kind: "wait" },
+  { vote: -10, label: "Reject", kind: "reject" },
+];
+
+/** Single dropdown merging the four vote actions; the trigger reflects the current vote. */
+function VoteMenu({
+  myVote,
+  busy,
+  onVote,
 }: {
-  label: string;
-  active: boolean;
-  kind: "approve" | "wait" | "reject";
-  onClick: () => void;
+  myVote: ReviewerVote;
+  busy: boolean;
+  onVote: (v: ReviewerVote) => void;
 }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, [open]);
+
+  const current = VOTE_OPTIONS.find((o) => o.vote === myVote);
+  const pick = (v: ReviewerVote) => {
+    onVote(v);
+    setOpen(false);
+  };
+
   return (
-    <button className={`vote-btn ${kind} ${active ? "active" : ""}`} onClick={onClick} title={label}>
-      {label}
-    </button>
+    <div className="vote-menu" ref={ref}>
+      <button
+        className={`vote-btn ${current?.kind ?? ""} ${current ? "active" : ""}`}
+        disabled={busy}
+        onClick={() => setOpen((o) => !o)}
+        title="Set your vote"
+      >
+        {current?.label ?? "Vote"} ▾
+      </button>
+      {open && (
+        <div className="vote-menu-pop">
+          {VOTE_OPTIONS.map((o) => (
+            <button
+              key={o.vote}
+              className={`${o.kind} ${o.vote === myVote ? "active" : ""}`}
+              onClick={() => pick(o.vote)}
+            >
+              {o.label}
+            </button>
+          ))}
+          {myVote !== 0 && (
+            <button className="reset" onClick={() => pick(0)}>
+              Reset vote
+            </button>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 

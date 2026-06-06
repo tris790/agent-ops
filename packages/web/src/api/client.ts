@@ -104,6 +104,7 @@ export const api = {
 
   me: (org: string) => request<Identity>(`/api/me?${qs({ org })}`),
   repos: (org: string) => request<{ repos: AdoRepository[] }>(`/api/repos?${qs({ org })}`),
+  users: (org: string) => request<{ users: Identity[] }>(`/api/users?${qs({ org })}`),
   prs: (params: PrQuery) => request<PrPage>(`/api/prs?${qs({ ...params })}`),
 
   pr: (org: string, repositoryId: string, pullRequestId: number) =>
