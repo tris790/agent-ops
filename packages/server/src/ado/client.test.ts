@@ -42,6 +42,15 @@ test("401 maps to AuthRequiredError (expired PAT)", async () => {
   await expect(client.getOne("_apis/x", z.object({}))).rejects.toBeInstanceOf(AuthRequiredError);
 });
 
+test("almSearchBaseUrl derives the almsearch sibling host for both URL forms", () => {
+  expect(
+    new AdoClient("org", "https://dev.azure.com/org", tokens).almSearchBaseUrl(),
+  ).toBe("https://almsearch.dev.azure.com/org");
+  expect(
+    new AdoClient("org", "https://org.visualstudio.com", tokens).almSearchBaseUrl(),
+  ).toBe("https://org.almsearch.visualstudio.com");
+});
+
 test("getAllPaged follows x-ms-continuationtoken across pages", async () => {
   let call = 0;
   mockFetch((url) => {

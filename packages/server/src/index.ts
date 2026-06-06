@@ -7,6 +7,7 @@ import { handlePrRoutes } from "./routes/pr.js";
 import { handleReviewRoutes } from "./routes/review.js";
 import { handleLspRoutes } from "./routes/lsp.js";
 import { handleBrowseRoutes } from "./routes/browse.js";
+import { handleSearchRoutes } from "./routes/search.js";
 import { handlePipelineRoutes } from "./routes/pipelines.js";
 import { subscribe, sendToServer, hasSession } from "./lsp/manager.js";
 import { serveStatic } from "./static.js";
@@ -61,6 +62,7 @@ const server = Bun.serve<WsData>({
           (await handleReviewRoutes(req, url)) ??
           (await handleLspRoutes(req, url)) ??
           (await handleBrowseRoutes(req, url)) ??
+          (await handleSearchRoutes(req, url)) ??
           (await handlePipelineRoutes(req, url)) ??
           (await handlePrRoutes(req, url));
         if (handled) return handled;

@@ -61,6 +61,19 @@ body {
   padding: 0 20px;
 }
 
+/* Code explorer: full width + height, edge-to-edge below the topbar (slim header kept). */
+.content:has(.codebrowser) {
+  max-width: none;
+  padding: 0;
+  height: calc(100vh - 53px);
+}
+
+/* Global search results: full width, modest side padding. */
+.content:has(.global-search) {
+  max-width: none;
+  padding: 16px 20px;
+}
+
 h1 {
   font-size: 1.4rem;
 }
@@ -649,6 +662,19 @@ h2 {
 .search-line-no { color: var(--muted); min-width: 28px; text-align: right; font-variant-numeric: tabular-nums; }
 .search-preview { font-family: ui-monospace, monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+/* ---- global code search screen ---- */
+.global-search-head { display: flex; align-items: baseline; gap: 10px; }
+.global-search-head h1 { font-size: 1.1rem; margin: 0; }
+.global-search-scope { color: var(--muted); font-size: 0.85rem; }
+.global-search-count { color: var(--muted); font-size: 0.8rem; margin: 6px 0 12px; }
+.global-search-empty { color: var(--muted); padding: 24px 4px; }
+.global-search-repo { margin-bottom: 14px; }
+.global-search-repo-name { font-size: 0.85rem; color: var(--accent); padding: 4px 0; border-bottom: 1px solid var(--border); margin-bottom: 4px; }
+.global-search-hit { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 4px 8px; border-radius: 6px; cursor: pointer; font-size: 0.85rem; }
+.global-search-hit:hover { background: rgba(255,255,255,0.05); }
+.global-search-file { font-family: ui-monospace, monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.global-search-branch { color: var(--muted); font-size: 0.78rem; white-space: nowrap; }
+
 /* ---- command palette ---- */
 .palette-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.5); display: flex; justify-content: center; align-items: flex-start; padding-top: 12vh; z-index: 100; }
 .palette { width: 640px; max-width: 90vw; background: var(--panel); border: 1px solid var(--border); border-radius: 12px; box-shadow: 0 16px 48px rgba(0,0,0,0.6); overflow: hidden; }
@@ -737,12 +763,6 @@ h2 {
 /* ---- search match highlights in the diff (both panes) ---- */
 .search-match { background: rgba(234,179,8,0.32); border-radius: 2px; }
 .search-match-active { background: rgba(234,179,8,0.65); outline: 1px solid rgba(234,179,8,0.9); }
-
-/* ---- command palette: branch-pick crumb + branch kind ---- */
-.palette-crumb { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-bottom: 1px solid var(--border); color: var(--muted); font-size: 0.85rem; }
-.palette-back { background: transparent; border: 1px solid var(--border); color: var(--muted); border-radius: 6px; padding: 2px 8px; cursor: pointer; font-size: 0.8rem; }
-.palette-back:hover { color: var(--text); }
-.palette-kind.branch { color: var(--accent); border-color: var(--accent); }
 
 /* ---- standalone Code browser ---- */
 .codebrowser { display: flex; flex-direction: column; flex: 1; min-height: 0; }

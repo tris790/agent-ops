@@ -1,10 +1,12 @@
 import { useState } from "react";
+import type { AdoRepository } from "@agent-ops/shared";
 import { useActiveOrg, useIdentity } from "./api/useOrg.js";
 import { ReviewQueue } from "./screens/ReviewQueue.js";
 import { PrView } from "./screens/PrView.js";
 import { Config } from "./screens/Config.js";
 import { Pipelines } from "./screens/Pipelines.js";
 import { CodeBrowser } from "./screens/CodeBrowser.js";
+import { SearchResults } from "./screens/SearchResults.js";
 import { CommandPalette } from "./components/CommandPalette.js";
 import { useRoute } from "./router.js";
 
@@ -91,6 +93,10 @@ export function App() {
           />
         )}
 
+        {screen === "search" && org && (
+          <SearchResults org={org.name} route={route} navigate={navigate} />
+        )}
+
         {screen === "code" && org && route.repoId && route.ref && (
           <CodeBrowser
             key={`${route.repoId}@${route.ref}`}
@@ -123,12 +129,17 @@ export function App() {
           onOpenPr={(pr) =>
             navigate({ screen: "pr", repoId: pr.repository.id, prId: pr.pullRequestId })
           }
-          onOpenRepo={() => navigate({ screen: "queue" })}
-          onOpenCode={(repo, branch) =>
-            navigate({ screen: "code", repoId: repo.id, ref: branch })
+          onOpenCode={(repo) =>
+            navigate({ screen: "code", repoId: repo.id, ref: defaultBranchOf(repo) })
           }
+          onSearch={(q, searchType) => navigate({ screen: "search", q, searchType })}
         />
       )}
     </div>
   );
+}
+
+/** Short default-branch name for a repo (no refs/heads/ prefix), falling back to main. */
+function defaultBranchOf(repo: AdoRepository): string {
+  return (repo.defaultBranch ?? "").replace(/^refs\/heads\//, "") || "main";
 }

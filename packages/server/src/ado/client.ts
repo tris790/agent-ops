@@ -60,6 +60,22 @@ export class AdoClient {
     return trimmed;
   }
 
+  /**
+   * The `almsearch` sibling host for the Code Search API, which (like Graph) does
+   * not live on the regular org host. Pass the result as an absolute URL to send().
+   *   https://{org}.visualstudio.com      -> https://{org}.almsearch.visualstudio.com
+   *   https://dev.azure.com/{org}         -> https://almsearch.dev.azure.com/{org}
+   */
+  almSearchBaseUrl(): string {
+    const trimmed = this.baseUrl.replace(/\/$/, "");
+    if (/\/\/dev\.azure\.com\//.test(trimmed)) {
+      return trimmed.replace("//dev.azure.com/", "//almsearch.dev.azure.com/");
+    }
+    const vs = trimmed.match(/^(https?:\/\/)([^./]+)\.visualstudio\.com(.*)$/);
+    if (vs) return `${vs[1]}${vs[2]}.almsearch.visualstudio.com${vs[3]}`;
+    return trimmed;
+  }
+
   /** Builds an absolute URL, appending api-version. `pathOrUrl` may be project-scoped. */
   private url(pathOrUrl: string, query?: RequestQuery, apiVersion?: string): string {
     const u = pathOrUrl.startsWith("http")

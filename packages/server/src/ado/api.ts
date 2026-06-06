@@ -6,7 +6,9 @@ import {
   type AdoRepository,
   type PrStatus,
 } from "@agent-ops/shared";
+import type { CodeSearchHit } from "@agent-ops/shared";
 import type { AdoClient } from "./client.js";
+import { AdoError } from "./client.js";
 import { AuthRequiredError } from "../http.js";
 
 /**
@@ -223,4 +225,93 @@ export async function getPullRequest(
 /** Project path segment ("project/" or "") for building scoped URLs. */
 function proj(project?: string): string {
   return project ? `${encodeURIComponent(project)}/` : "";
+}
+
+// ---- code search (Azure DevOps Code Search extension) ----
+
+/** A single result from the Code Search API (subset we map to {@link CodeSearchHit}). */
+const codeSearchResultItem = z
+  .object({
+    fileName: z.string(),
+    path: z.string(),
+    repository: z.object({ id: z.string(), name: z.string() }).passthrough(),
+    project: z.object({ name: z.string() }).passthrough(),
+    versions: z
+      .array(z.object({ branchName: z.string() }).passthrough())
+      .optional(),
+    matches: z
+      .object({ content: z.array(z.object({}).passthrough()).optional() })
+      .passthrough()
+      .optional(),
+  })
+  .passthrough();
+
+const codeSearchResponse = z
+  .object({
+    count: z.number().optional(),
+    results: z.array(codeSearchResultItem).optional(),
+  })
+  .passthrough();
+
+export interface SearchCodeOptions {
+  text: string;
+  /** Restrict to a single repository (by name) when set. */
+  repo?: string;
+  /** Restrict to a path prefix (e.g. "/src") when set. */
+  path?: string;
+  top?: number;
+  skip?: number;
+}
+
+/**
+ * Global code search across the org via the Azure DevOps Code Search REST API,
+ * which lives on the `almsearch` sibling host. Returns hits carrying the owning
+ * repo/branch; line numbers are not provided by the API (it returns char offsets),
+ * so callers open the file at its branch rather than a specific line.
+ *
+ * The Code Search extension is optional per org; when it isn't installed ADO
+ * answers 404. We surface that as `extensionMissing` rather than a hard error so
+ * the UI can prompt to enable it.
+ */
+export async function searchCode(
+  client: AdoClient,
+  opts: SearchCodeOptions,
+): Promise<{ count: number; hits: CodeSearchHit[]; extensionMissing?: boolean }> {
+  const filters: Record<string, string[]> = {};
+  if (opts.repo) filters.Repository = [opts.repo];
+  if (opts.path) filters.Path = [opts.path];
+
+  const body = {
+    searchText: opts.text,
+    $top: opts.top ?? 50,
+    $skip: opts.skip ?? 0,
+    filters: Object.keys(filters).length ? filters : null,
+    includeSnippet: true,
+  };
+
+  const url = `${client.almSearchBaseUrl()}/_apis/search/codesearchresults`;
+
+  let parsed: z.infer<typeof codeSearchResponse>;
+  try {
+    const res = await client.raw("POST", url, { body });
+    parsed = codeSearchResponse.parse(await res.json());
+  } catch (err) {
+    // No Code Search extension on this org -> 404. Treat as "feature unavailable".
+    if (err instanceof AdoError && err.status === 404) {
+      return { count: 0, hits: [], extensionMissing: true };
+    }
+    throw err;
+  }
+
+  const hits: CodeSearchHit[] = (parsed.results ?? []).map((r) => ({
+    path: r.path.startsWith("/") ? r.path : `/${r.path}`,
+    fileName: r.fileName,
+    repoId: r.repository.id,
+    repoName: r.repository.name,
+    project: r.project.name,
+    branch: (r.versions?.[0]?.branchName ?? "").replace(/^refs\/heads\//, ""),
+    snippet: undefined,
+  }));
+
+  return { count: parsed.count ?? hits.length, hits };
 }

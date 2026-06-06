@@ -4,6 +4,7 @@ import type {
   AdoRepository,
   AdoRun,
   AdoThread,
+  CodeSearchHit,
   FileContent,
   OrgConfig,
   PolicyEvaluation,
@@ -224,6 +225,16 @@ export const api = {
     for (const p of opts.paths ?? []) u.append("path", p);
     return request<{ hits: SearchHit[] }>(`/api/browse/search?${u.toString()}`);
   },
+
+  /** Global code search across the whole org via the ADO Code Search API. */
+  searchCode: (
+    org: string,
+    q: string,
+    opts: { repo?: string; path?: string; top?: number } = {},
+  ) =>
+    request<{ count: number; hits: CodeSearchHit[]; extensionMissing?: boolean }>(
+      `/api/search/code?${qs({ org, q, ...opts })}`,
+    ),
 
   // ---- pipelines ----
   projects: (org: string) =>

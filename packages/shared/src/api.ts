@@ -205,6 +205,31 @@ export type SearchOptions = z.infer<typeof searchOptions>;
 export const branchList = z.object({ branches: z.array(z.string()) });
 export type BranchList = z.infer<typeof branchList>;
 
+/**
+ * A global code-search hit from the Azure DevOps Code Search API (org-wide, across
+ * all repos). Unlike {@link searchHit}, this carries the owning repo/branch but no
+ * line number — the Code Search API returns char offsets, not lines, so a clicked
+ * hit opens the file at its branch (the viewer lands at the top).
+ */
+export const codeSearchHit = z.object({
+  path: z.string(), // repo-relative, leading slash (e.g. "/src/app.ts")
+  fileName: z.string(),
+  repoId: z.string(),
+  repoName: z.string(),
+  project: z.string(),
+  branch: z.string(), // short form, no refs/heads/ prefix
+  snippet: z.string().optional(),
+});
+export type CodeSearchHit = z.infer<typeof codeSearchHit>;
+
+/** Global code-search response. `extensionMissing` flags an org without Code Search. */
+export const codeSearchResult = z.object({
+  count: z.number(),
+  hits: z.array(codeSearchHit),
+  extensionMissing: z.boolean().optional(),
+});
+export type CodeSearchResult = z.infer<typeof codeSearchResult>;
+
 /** Standard error envelope returned by the backend. */
 export const apiError = z.object({
   error: z.object({

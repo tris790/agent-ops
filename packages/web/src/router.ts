@@ -11,10 +11,11 @@ import { useEffect, useState, useCallback } from "react";
  *   #/config                               org/PAT config
  *   #/:repoId/pr/:prId?mode=&file=&line=   PR view (mode: diff|browse)
  *   #/code/:repoId/:ref?file=&line=        standalone code browse (ref = branch)
+ *   #/search?q=&type=&repo=                global code search (shareable)
  */
 
 export interface Route {
-  screen: "queue" | "config" | "pr" | "pipelines" | "code";
+  screen: "queue" | "config" | "pr" | "pipelines" | "code" | "search";
   repoId?: string;
   prId?: number;
   /** Branch name for the code-browse screen (may contain "/"; URL-encoded in hash). */
@@ -22,6 +23,12 @@ export interface Route {
   mode?: "diff" | "browse";
   file?: string;
   line?: number;
+  /** Global-search query (search screen). */
+  q?: string;
+  /** Global-search kind: code content vs. file path. */
+  searchType?: "code" | "file";
+  /** Optional repo-name scope for the global search. */
+  searchRepo?: string;
 }
 
 export function parseHash(hash: string): Route {
@@ -32,6 +39,16 @@ export function parseHash(hash: string): Route {
 
   if (segs[0] === "config") return { screen: "config" };
   if (segs[0] === "pipelines") return { screen: "pipelines" };
+
+  // /search?q=&type=&repo=
+  if (segs[0] === "search") {
+    return {
+      screen: "search",
+      q: query.get("q") ?? undefined,
+      searchType: query.get("type") === "file" ? "file" : "code",
+      searchRepo: query.get("repo") ?? undefined,
+    };
+  }
 
   // /code/:repoId/:ref  (ref is a single URL-encoded segment so "feature/x" survives)
   if (segs[0] === "code" && segs.length >= 3) {
@@ -62,6 +79,14 @@ export function parseHash(hash: string): Route {
 export function buildHash(r: Route): string {
   if (r.screen === "config") return "#/config";
   if (r.screen === "pipelines") return "#/pipelines";
+  if (r.screen === "search") {
+    const q = new URLSearchParams();
+    if (r.q) q.set("q", r.q);
+    if (r.searchType && r.searchType !== "code") q.set("type", r.searchType);
+    if (r.searchRepo) q.set("repo", r.searchRepo);
+    const qs = q.toString();
+    return `#/search${qs ? "?" + qs : ""}`;
+  }
   if (r.screen === "code" && r.repoId && r.ref) {
     const q = new URLSearchParams();
     if (r.file) q.set("file", r.file);
