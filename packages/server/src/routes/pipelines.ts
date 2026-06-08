@@ -8,6 +8,7 @@ import {
   listRuns,
   queueRun,
   getRunLogs,
+  getPipelineParameters,
 } from "../ado/pipelines.js";
 import { cached } from "../store/cache.js";
 
@@ -30,6 +31,7 @@ const queueRequest = z.object({
   project: z.string(),
   pipelineId: z.number(),
   refName: z.string().optional(),
+  templateParameters: z.record(z.string()).optional(),
 });
 
 export async function handlePipelineRoutes(req: Request, url: URL): Promise<Response | null> {
@@ -46,6 +48,14 @@ export async function handlePipelineRoutes(req: Request, url: URL): Promise<Resp
   if (url.pathname === "/api/pipelines" && req.method === "GET") {
     const project = required(url, "project");
     return json({ pipelines: await listPipelines(client(url), project) });
+  }
+
+  // GET /api/pipelines/parameters?org=&project=&pipelineId=
+  // Declared runtime template parameters + the repo's default branch.
+  if (url.pathname === "/api/pipelines/parameters" && req.method === "GET") {
+    const project = required(url, "project");
+    const pipelineId = Number(required(url, "pipelineId"));
+    return json(await getPipelineParameters(client(url), project, pipelineId));
   }
 
   // GET /api/pipelines/runs?org=&project=&pipelineId=
@@ -67,7 +77,13 @@ export async function handlePipelineRoutes(req: Request, url: URL): Promise<Resp
   // POST /api/pipelines/queue  { org, project, pipelineId, refName? }
   if (url.pathname === "/api/pipelines/queue" && req.method === "POST") {
     const b = await parseBody(req, queueRequest);
-    const run = await queueRun(AdoClient.forOrg(b.org, tokens), b.project, b.pipelineId, b.refName);
+    const run = await queueRun(
+      AdoClient.forOrg(b.org, tokens),
+      b.project,
+      b.pipelineId,
+      b.refName,
+      b.templateParameters,
+    );
     return json(run);
   }
 

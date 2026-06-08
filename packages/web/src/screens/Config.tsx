@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import type { OrgConfig } from "@agent-ops/shared";
+import { normalizeOrgBaseUrl, type OrgConfig } from "@agent-ops/shared";
 import { api } from "../api/client.js";
 
 /**
@@ -64,6 +64,7 @@ export function Config({ current }: { current: OrgConfig | null }) {
             onChange={(e) => setBaseUrl(e.target.value)}
             onBlur={() => {
               if (!baseUrl && name) setBaseUrl(`https://${name}.visualstudio.com`);
+              else if (baseUrl) setBaseUrl(normalizeOrgBaseUrl(baseUrl));
             }}
           />
         </label>

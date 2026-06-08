@@ -1,5 +1,6 @@
 import { test, expect, afterEach } from "bun:test";
 import { z } from "zod";
+import { normalizeOrgBaseUrl } from "@agent-ops/shared";
 import { AdoClient } from "./client.js";
 import type { TokenProvider } from "./token-provider.js";
 import { AuthRequiredError } from "../http.js";
@@ -40,6 +41,25 @@ test("401 maps to AuthRequiredError (expired PAT)", async () => {
   mockFetch(() => new Response("nope", { status: 401 }));
   const client = new AdoClient("org", "https://dev.azure.com/org", tokens);
   await expect(client.getOne("_apis/x", z.object({}))).rejects.toBeInstanceOf(AuthRequiredError);
+});
+
+test("normalizeOrgBaseUrl canonicalizes www./scheme/trailing-slash, leaves valid forms alone", () => {
+  expect(normalizeOrgBaseUrl("https://www.dev.azure.com/ClaudeOps")).toBe(
+    "https://dev.azure.com/ClaudeOps",
+  );
+  expect(normalizeOrgBaseUrl("https://www.dev.azure.com/org/")).toBe("https://dev.azure.com/org");
+  expect(normalizeOrgBaseUrl("http://dev.azure.com/org")).toBe("https://dev.azure.com/org");
+  expect(normalizeOrgBaseUrl("  https://dev.azure.com/org  ")).toBe("https://dev.azure.com/org");
+  // Already-canonical forms pass through unchanged.
+  expect(normalizeOrgBaseUrl("https://dev.azure.com/org")).toBe("https://dev.azure.com/org");
+  expect(normalizeOrgBaseUrl("https://org.visualstudio.com")).toBe("https://org.visualstudio.com");
+});
+
+test("sibling-host derivations work after normalizing a www. base URL", () => {
+  const base = normalizeOrgBaseUrl("https://www.dev.azure.com/org");
+  const client = new AdoClient("org", base, tokens);
+  expect(client.almSearchBaseUrl()).toBe("https://almsearch.dev.azure.com/org");
+  expect(client.graphBaseUrl()).toBe("https://vssps.dev.azure.com/org");
 });
 
 test("almSearchBaseUrl derives the almsearch sibling host for both URL forms", () => {

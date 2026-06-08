@@ -13,18 +13,16 @@ import { api } from "../api/client.js";
  *
  * `repo:`/`pr:` filter the cached lists client-side and jump on Enter. A bare or
  * `file:` query is a global search: Enter navigates to the shareable search screen
- * (`onSearch`) so the result set has a URL and back/forward works. `openSignal`
- * lets the host open the palette programmatically (the "Code" nav button bumps it).
+ * (`onSearch`) so the result set has a URL and back/forward works. Opens on Cmd/Ctrl-K
+ * only; the "Code" nav button uses the dedicated {@link CodePicker} instead.
  */
 export function CommandPalette({
   org,
-  openSignal,
   onOpenPr,
   onOpenCode,
   onSearch,
 }: {
   org: string;
-  openSignal?: number;
   onOpenPr: (pr: AdoPullRequest) => void;
   onOpenCode: (repo: AdoRepository) => void;
   onSearch: (q: string, type: "code" | "file") => void;
@@ -47,11 +45,6 @@ export function CommandPalette({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
-
-  // Host-triggered open (e.g. the Code nav button).
-  useEffect(() => {
-    if (openSignal) setOpen(true);
-  }, [openSignal]);
 
   useEffect(() => {
     if (open) {

@@ -100,7 +100,10 @@ function spawnSession(key: string, lang: Lang, launch: ServerLaunch, rootDir: st
   // fill the OS pipe buffer and deadlock the child if stderr is never read.
   void drainStderr(session);
   void proc.exited.then((code) => {
-    console.warn(`[agent-ops] LSP session exited: ${key} (${lang}) code=${code}`);
+    // A non-zero/null exit means the server crashed (vs. an orderly shutdown);
+    // log it loudly since it leaves navigation silently broken for that lang.
+    const log = code ? console.error : console.warn;
+    log(`[agent-ops] LSP session exited: ${key} (${lang}) code=${code}`);
     if (sessions.get(key) === session) sessions.delete(key);
   });
 
@@ -167,9 +170,24 @@ function drainFrames(session: LspSession): void {
         session.projectReady = true;
       }
       // Surface Roslyn load failures (e.g. legacy projects needing Mono) to the log.
-      const mm = msg as { method?: string; params?: { message?: string } };
+      const mm = msg as { method?: string; params?: { type?: number; message?: string } };
       if (mm.method === "window/_roslyn_showToast" && mm.params?.message) {
         console.warn(`[agent-ops] roslyn ${session.key}: ${mm.params.message}`);
+      }
+      // Surface standard LSP problem notifications. This is where most servers
+      // report real failures — e.g. Roslyn/OmniSharp emitting a failed `dotnet
+      // restore` against an authenticated private NuGet feed, which otherwise
+      // silently breaks hover/go-to/references. type 1=Error, 2=Warning (3=Info,
+      // 4=Log are dropped to avoid noise).
+      if (
+        (mm.method === "window/showMessage" || mm.method === "window/logMessage") &&
+        mm.params?.message &&
+        (mm.params.type ?? 4) <= 2
+      ) {
+        const level = mm.params.type === 1 ? "error" : "warn";
+        console[level](
+          `[agent-ops] LSP ${level} ${session.key} (${session.lang}): ${mm.params.message}`,
+        );
       }
       for (const fn of session.listeners) fn(msg);
     } catch {

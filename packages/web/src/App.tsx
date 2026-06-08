@@ -8,6 +8,7 @@ import { Pipelines } from "./screens/Pipelines.js";
 import { CodeBrowser } from "./screens/CodeBrowser.js";
 import { SearchResults } from "./screens/SearchResults.js";
 import { CommandPalette } from "./components/CommandPalette.js";
+import { CodePicker } from "./components/CodePicker.js";
 import { useRoute } from "./router.js";
 
 /**
@@ -19,9 +20,9 @@ export function App() {
   const { org, isLoading } = useActiveOrg();
   const me = useIdentity(org?.name);
   const { route, navigate } = useRoute();
-  // Bumping this opens the command palette (used by the Code nav button to let the
-  // user pick a repo+branch to browse).
-  const [paletteSignal, setPaletteSignal] = useState(0);
+  // Bumping this opens the code-browse picker (the Code nav button: pick project →
+  // repo → browse). Cmd-K still opens the search-first command palette separately.
+  const [codePickerSignal, setCodePickerSignal] = useState(0);
 
   // No org configured, or token missing/expired -> force config.
   const needsConfig = !org || !org.hasToken || me.isError;
@@ -58,9 +59,9 @@ export function App() {
           <button
             className={screen === "code" ? "nav-btn active" : "nav-btn"}
             onClick={() => {
-              // No repo/branch chosen yet → open the palette to pick one.
+              // No repo/branch chosen yet → open the picker to choose one.
               if (route.screen === "code" && route.repoId && route.ref) return;
-              setPaletteSignal((s) => s + 1);
+              setCodePickerSignal((s) => s + 1);
             }}
             disabled={needsConfig}
           >
@@ -123,17 +124,25 @@ export function App() {
       </main>
 
       {org && me.data?.id && (
-        <CommandPalette
-          org={org.name}
-          openSignal={paletteSignal}
-          onOpenPr={(pr) =>
-            navigate({ screen: "pr", repoId: pr.repository.id, prId: pr.pullRequestId })
-          }
-          onOpenCode={(repo) =>
-            navigate({ screen: "code", repoId: repo.id, ref: defaultBranchOf(repo) })
-          }
-          onSearch={(q, searchType) => navigate({ screen: "search", q, searchType })}
-        />
+        <>
+          <CommandPalette
+            org={org.name}
+            onOpenPr={(pr) =>
+              navigate({ screen: "pr", repoId: pr.repository.id, prId: pr.pullRequestId })
+            }
+            onOpenCode={(repo) =>
+              navigate({ screen: "code", repoId: repo.id, ref: defaultBranchOf(repo) })
+            }
+            onSearch={(q, searchType) => navigate({ screen: "search", q, searchType })}
+          />
+          <CodePicker
+            org={org.name}
+            openSignal={codePickerSignal}
+            onOpenCode={(repo) =>
+              navigate({ screen: "code", repoId: repo.id, ref: defaultBranchOf(repo) })
+            }
+          />
+        </>
       )}
     </div>
   );

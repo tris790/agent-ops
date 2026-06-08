@@ -201,6 +201,22 @@ export const adoPipeline = z
   .passthrough();
 export type AdoPipeline = z.infer<typeof adoPipeline>;
 
+/**
+ * A runtime template parameter declared by a pipeline's YAML (the `parameters:`
+ * block). Surfaced so the queue UI can render typed inputs instead of forcing the
+ * user to remember names/values.
+ */
+export const adoPipelineParameter = z.object({
+  name: z.string(),
+  /** YAML parameter type: boolean | number | string | object | step(s) | ... */
+  type: z.string(),
+  /** Default value as a string (booleans "true"/"false"); may be undefined. */
+  default: z.string().optional(),
+  /** Allowed values for enum-style parameters (renders a <select>). */
+  allowed: z.array(z.string()).optional(),
+});
+export type AdoPipelineParameter = z.infer<typeof adoPipelineParameter>;
+
 export const adoRun = z
   .object({
     id: z.number(),

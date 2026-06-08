@@ -1,4 +1,4 @@
-import { setTokenRequest, setReviewFiltersRequest } from "@agent-ops/shared";
+import { setTokenRequest, setReviewFiltersRequest, normalizeOrgBaseUrl } from "@agent-ops/shared";
 import { BadRequestError, json, parseBody } from "../http.js";
 import {
   listOrgs,
@@ -24,7 +24,7 @@ export async function handleOrgRoutes(req: Request, url: URL): Promise<Response 
     if (!pat && !getOrgRow(body.org)?.pat) {
       throw new BadRequestError("personal access token required");
     }
-    upsertOrg(body.org, body.baseUrl, body.pat, Date.now());
+    upsertOrg(body.org, normalizeOrgBaseUrl(body.baseUrl), body.pat, Date.now());
     return json({ ok: true });
   }
 

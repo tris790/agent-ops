@@ -1,7 +1,12 @@
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { AdoPipeline, AdoRun } from "@agent-ops/shared";
+import type { AdoPipeline, AdoRun, AdoPipelineParameter } from "@agent-ops/shared";
 import { api } from "../api/client.js";
+import { fuzzyFilter } from "../lib/fuzzy.js";
+import { useVirtualList } from "../components/useVirtualList.js";
+
+/** Fixed row height (li height + margin-bottom) — must match `.pipeline-list li` in styles.css. */
+const ROW_H = 66;
 
 /**
  * Pipelines: pick a project, see its pipelines, drill into runs (live status),
@@ -37,24 +42,52 @@ function PipelineList({ org, project }: { org: string; project: string }) {
     queryFn: () => api.pipelines(org, project),
   });
   const [selected, setSelected] = useState<AdoPipeline | null>(null);
+  const [search, setSearch] = useState("");
+
+  // Fuzzy-match name and folder so "ci/build" or "bld" both find the pipeline.
+  const filtered = useMemo(
+    () =>
+      fuzzyFilter(pipelines.data?.pipelines ?? [], search, (p) =>
+        `${p.folder && p.folder !== "\\" ? p.folder + " " : ""}${p.name}`,
+      ),
+    [pipelines.data, search],
+  );
+  const { scrollRef, onScroll, range, topPad, bottomPad } = useVirtualList<HTMLUListElement>(
+    filtered.length,
+    ROW_H,
+  );
 
   if (pipelines.isLoading) return <p>Loading pipelines…</p>;
   if (!pipelines.data?.pipelines.length) return <p className="empty">No pipelines in {project}.</p>;
 
   return (
     <div className="pipeline-layout">
-      <ul className="pipeline-list">
-        {pipelines.data.pipelines.map((p) => (
-          <li
-            key={p.id}
-            className={selected?.id === p.id ? "sel" : ""}
-            onClick={() => setSelected(p)}
-          >
-            <span className="pipeline-name">{p.name}</span>
-            {p.folder && p.folder !== "\\" && <span className="pipeline-folder">{p.folder}</span>}
-          </li>
-        ))}
-      </ul>
+      <div className="pipeline-pane">
+        <input
+          className="pipeline-search"
+          placeholder="Search pipelines…"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+        />
+        <div className="pipeline-count">
+          {filtered.length} of {pipelines.data.pipelines.length}
+        </div>
+        <ul className="pipeline-list" ref={scrollRef} onScroll={onScroll}>
+          <li style={{ height: topPad, margin: 0, padding: 0, border: "none", background: "none" }} />
+          {filtered.slice(range.start, range.end).map((p) => (
+            <li
+              key={p.id}
+              className={selected?.id === p.id ? "sel" : ""}
+              onClick={() => setSelected(p)}
+            >
+              <span className="pipeline-name">{p.name}</span>
+              {p.folder && p.folder !== "\\" && <span className="pipeline-folder">{p.folder}</span>}
+            </li>
+          ))}
+          <li style={{ height: bottomPad, margin: 0, padding: 0, border: "none", background: "none" }} />
+          {filtered.length === 0 && <li className="empty">No pipelines match.</li>}
+        </ul>
+      </div>
       <div className="pipeline-detail">
         {selected ? (
           <RunsView org={org} project={project} pipeline={selected} />
@@ -84,21 +117,27 @@ function RunsView({
       q.state.data?.runs.some((r) => r.state === "inProgress") ? 5000 : false,
   });
   const [openRun, setOpenRun] = useState<number | null>(null);
-
-  const queue = useMutation({
-    mutationFn: () => api.queuePipeline(org, project, pipeline.id),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["runs", org, project, pipeline.id] }),
-  });
+  const [showForm, setShowForm] = useState(false);
 
   return (
     <div className="runs-view">
       <div className="runs-head">
         <h2>{pipeline.name}</h2>
-        <button className="btn-primary" disabled={queue.isPending} onClick={() => queue.mutate()}>
-          {queue.isPending ? "Queuing…" : "Run pipeline"}
+        <button className="btn-primary" onClick={() => setShowForm((s) => !s)}>
+          {showForm ? "Cancel" : "Run pipeline"}
         </button>
       </div>
-      {queue.isError && <p className="err">{(queue.error as Error).message}</p>}
+      {showForm && (
+        <QueueForm
+          org={org}
+          project={project}
+          pipeline={pipeline}
+          onQueued={() => {
+            setShowForm(false);
+            void qc.invalidateQueries({ queryKey: ["runs", org, project, pipeline.id] });
+          }}
+        />
+      )}
       {runs.isLoading && <p>Loading runs…</p>}
       {runs.data?.runs.length === 0 && <p className="empty">No runs yet.</p>}
       <ul className="run-list">
@@ -115,6 +154,127 @@ function RunsView({
         ))}
       </ul>
     </div>
+  );
+}
+
+/**
+ * Queue form: pick a branch and fill in the pipeline's declared runtime
+ * parameters (typed inputs), then queue the run. Parameters and the default
+ * branch are fetched lazily when the form opens.
+ */
+function QueueForm({
+  org,
+  project,
+  pipeline,
+  onQueued,
+}: {
+  org: string;
+  project: string;
+  pipeline: AdoPipeline;
+  onQueued: () => void;
+}) {
+  const params = useQuery({
+    queryKey: ["pipeline-params", org, project, pipeline.id],
+    queryFn: () => api.pipelineParameters(org, project, pipeline.id),
+  });
+
+  const [branch, setBranch] = useState("");
+  const [values, setValues] = useState<Record<string, string>>({});
+
+  // Seed branch + parameter defaults once the schema arrives.
+  useEffect(() => {
+    if (!params.data) return;
+    if (params.data.defaultBranch) setBranch((b) => b || params.data!.defaultBranch!);
+    const seed: Record<string, string> = {};
+    for (const p of params.data.parameters) if (p.default !== undefined) seed[p.name] = p.default;
+    setValues((v) => ({ ...seed, ...v }));
+  }, [params.data]);
+
+  const queue = useMutation({
+    mutationFn: () => {
+      const refName = branch.trim()
+        ? branch.startsWith("refs/")
+          ? branch.trim()
+          : `refs/heads/${branch.trim()}`
+        : undefined;
+      const tp = Object.keys(values).length ? values : undefined;
+      return api.queuePipeline(org, project, pipeline.id, refName, tp);
+    },
+    onSuccess: onQueued,
+  });
+
+  const set = (name: string, value: string) => setValues((v) => ({ ...v, [name]: value }));
+
+  return (
+    <div className="queue-form">
+      <label className="queue-field">
+        <span>Branch</span>
+        <input
+          placeholder={params.data?.defaultBranch ?? "main"}
+          value={branch}
+          onChange={(e) => setBranch(e.target.value)}
+        />
+      </label>
+
+      {params.isLoading && <p className="queue-hint">Loading parameters…</p>}
+      {params.data?.parameters.map((p) => (
+        <label key={p.name} className="queue-field">
+          <span>
+            {p.name}
+            <em className="queue-type"> ({p.type})</em>
+          </span>
+          <ParamInput param={p} value={values[p.name] ?? ""} onChange={(v) => set(p.name, v)} />
+        </label>
+      ))}
+
+      {queue.isError && <p className="err">{(queue.error as Error).message}</p>}
+      <button
+        className="btn-primary"
+        disabled={queue.isPending}
+        onClick={() => queue.mutate()}
+      >
+        {queue.isPending ? "Queuing…" : "Queue run"}
+      </button>
+    </div>
+  );
+}
+
+/** Renders a typed input for a pipeline parameter (bool→checkbox, enum→select). */
+function ParamInput({
+  param,
+  value,
+  onChange,
+}: {
+  param: AdoPipelineParameter;
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  if (param.type === "boolean") {
+    return (
+      <input
+        type="checkbox"
+        checked={value === "true"}
+        onChange={(e) => onChange(e.target.checked ? "true" : "false")}
+      />
+    );
+  }
+  if (param.allowed && param.allowed.length > 0) {
+    return (
+      <select value={value} onChange={(e) => onChange(e.target.value)}>
+        {param.allowed.map((opt) => (
+          <option key={opt} value={opt}>
+            {opt}
+          </option>
+        ))}
+      </select>
+    );
+  }
+  return (
+    <input
+      type={param.type === "number" ? "number" : "text"}
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+    />
   );
 }
 

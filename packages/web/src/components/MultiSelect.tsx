@@ -1,9 +1,14 @@
 import { useState, useRef, useEffect } from "react";
+import { fuzzyFilter } from "../lib/fuzzy.js";
+import { useVirtualList } from "./useVirtualList.js";
 
 export interface Option {
   value: string;
   label: string;
 }
+
+/** Fixed row height in px — must match `.ms-option { height }` in styles.css. */
+const ROW_H = 32;
 
 /**
  * A compact multi-select dropdown used for the home-screen filters (users, repos,
@@ -42,9 +47,8 @@ export function MultiSelect({
     );
   };
 
-  const visible = filter
-    ? options.filter((o) => o.label.toLowerCase().includes(filter.toLowerCase()))
-    : options;
+  const visible = fuzzyFilter(options, filter, (o) => o.label);
+  const { scrollRef, onScroll, range, topPad, bottomPad } = useVirtualList(visible.length, ROW_H);
 
   return (
     <div className="ms" ref={ref}>
@@ -68,8 +72,9 @@ export function MultiSelect({
               onChange={(e) => setFilter(e.target.value)}
             />
           )}
-          <div className="ms-options">
-            {visible.map((o) => (
+          <div className="ms-options" ref={scrollRef} onScroll={onScroll}>
+            <div style={{ height: topPad }} />
+            {visible.slice(range.start, range.end).map((o) => (
               <label key={o.value} className="ms-option">
                 <input
                   type="checkbox"
@@ -79,6 +84,7 @@ export function MultiSelect({
                 <span>{o.label}</span>
               </label>
             ))}
+            <div style={{ height: bottomPad }} />
             {visible.length === 0 && <div className="ms-empty">No matches</div>}
           </div>
           {selected.length > 0 && (

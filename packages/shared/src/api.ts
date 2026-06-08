@@ -24,6 +24,25 @@ export const setTokenRequest = z.object({
 });
 export type SetTokenRequest = z.infer<typeof setTokenRequest>;
 
+/**
+ * Canonicalizes an ADO org base URL so the sibling-host derivations
+ * (`vssps.`/`almsearch.`) match. Users often paste the browser address-bar form
+ * `https://www.dev.azure.com/<ORG>`; ADO only serves `https://dev.azure.com/<ORG>`
+ * and `https://<ORG>.visualstudio.com`. Strips a leading `www.`, forces https,
+ * and drops a trailing slash. Returns the input unchanged if it can't be parsed
+ * (zod's `.url()` already rejects truly malformed input upstream).
+ */
+export function normalizeOrgBaseUrl(raw: string): string {
+  try {
+    const u = new URL(raw.trim());
+    u.protocol = "https:";
+    if (u.hostname.startsWith("www.")) u.hostname = u.hostname.slice(4);
+    return u.toString().replace(/\/$/, "");
+  } catch {
+    return raw.trim();
+  }
+}
+
 /** Persisted home-screen filter selections (multi-select). */
 export const reviewFilters = z.object({
   /** Reviewer/author identity ids to include; empty = all. */

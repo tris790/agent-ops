@@ -729,20 +729,7 @@ function NavStatus({
   onInstall: (lang: string) => void;
 }) {
   if (state === "install-required" && missing.length > 0) {
-    return (
-      <div className="nav-status install">
-        {missing.map((m) => (
-          <button
-            key={m.lang}
-            className="install-btn"
-            onClick={() => onInstall(m.lang)}
-            title={`Install ${m.serverName} to enable code navigation`}
-          >
-            Install {m.serverName}
-          </button>
-        ))}
-      </div>
-    );
+    return <InstallMenu missing={missing} onInstall={onInstall} />;
   }
   const label =
     state === "ready"
@@ -754,6 +741,57 @@ function NavStatus({
           : "";
   if (!label) return null;
   return <span className={`nav-status ${state}`}>{label}</span>;
+}
+
+/**
+ * A single dropdown that lists each missing language server with an install
+ * action. Replaces a row of per-language pills, which became unusable in repos
+ * with 5–10 languages.
+ */
+function InstallMenu({
+  missing,
+  onInstall,
+}: {
+  missing: ReturnType<typeof useLsp>["missing"];
+  onInstall: (lang: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, [open]);
+
+  return (
+    <div className="install-menu" ref={ref}>
+      <button className="install-btn" onClick={() => setOpen((o) => !o)}>
+        Install language servers ({missing.length}) <span className="ms-caret">▾</span>
+      </button>
+      {open && (
+        <div className="install-menu-list">
+          {missing.map((m) => (
+            <button
+              key={m.lang}
+              className="install-menu-item"
+              onClick={() => {
+                onInstall(m.lang);
+                setOpen(false);
+              }}
+              title={`Install ${m.serverName} to enable code navigation`}
+            >
+              <span>{m.lang}</span>
+              <span className="install-menu-server">{m.serverName}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 
 /** Normalizes ADO's combined changeType (e.g. "edit, rename") to a single kind. */

@@ -1,5 +1,6 @@
 import type {
   AdoPipeline,
+  AdoPipelineParameter,
   AdoPullRequest,
   AdoRepository,
   AdoRun,
@@ -241,13 +242,23 @@ export const api = {
     request<{ projects: { id: string; name: string }[] }>(`/api/projects?${qs({ org })}`),
   pipelines: (org: string, project: string) =>
     request<{ pipelines: AdoPipeline[] }>(`/api/pipelines?${qs({ org, project })}`),
+  pipelineParameters: (org: string, project: string, pipelineId: number) =>
+    request<{ parameters: AdoPipelineParameter[]; defaultBranch?: string }>(
+      `/api/pipelines/parameters?${qs({ org, project, pipelineId })}`,
+    ),
   pipelineRuns: (org: string, project: string, pipelineId: number) =>
     request<{ runs: AdoRun[] }>(`/api/pipelines/runs?${qs({ org, project, pipelineId })}`),
   pipelineLogs: (org: string, project: string, pipelineId: number, runId: number) =>
     request<{ logs: string }>(`/api/pipelines/logs?${qs({ org, project, pipelineId, runId })}`),
-  queuePipeline: (org: string, project: string, pipelineId: number, refName?: string) =>
+  queuePipeline: (
+    org: string,
+    project: string,
+    pipelineId: number,
+    refName?: string,
+    templateParameters?: Record<string, string>,
+  ) =>
     request<AdoRun>("/api/pipelines/queue", {
       method: "POST",
-      body: JSON.stringify({ org, project, pipelineId, refName }),
+      body: JSON.stringify({ org, project, pipelineId, refName, templateParameters }),
     }),
 };
